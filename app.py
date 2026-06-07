@@ -84,9 +84,10 @@ ALL_BIST = list(set(BIST100 + [
 def fetch_ticker(symbol, period="1y"):
     try:
         ticker = symbol if symbol.endswith(".IS") else symbol + ".IS"
-        df = yf.download(ticker, period=period, auto_adjust=True,
-                         progress=False, threads=False)
-        if df.empty or len(df) < 20:
+        today = datetime.today().strftime('%Y-%m-%d')
+        df = yf.download(ticker, period=period, end=today,
+                         auto_adjust=True, progress=False, threads=False)
+        if df.empty or len(df) < 10:
             return None
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
@@ -96,13 +97,14 @@ def fetch_ticker(symbol, period="1y"):
     except:
         return None
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_batch(tickers, period="2y"):
     results = {}
     symbols = [t + ".IS" for t in tickers]
     try:
-        raw = yf.download(symbols, period=period, auto_adjust=True,
-                          group_by='ticker', progress=False)
+        today = datetime.today().strftime('%Y-%m-%d')
+        raw = yf.download(symbols, period=period, end=today,
+                          auto_adjust=True, group_by='ticker', progress=False)
         for t in tickers:
             try:
                 sym = t + ".IS"
@@ -756,7 +758,11 @@ def main():
         with st.spinner(f"{symbol} yükleniyor..."):
             df = fetch_ticker(symbol, period)
         if df is None:
-            st.error(f"'{symbol}' bulunamadı.")
+            st.error(f"'{symbol}' için veri alınamadı. Olası nedenler:\n"
+                    "- Hisse az işlem görüyor olabilir\n"
+                    "- Dönem kısaltın (örn. 6 Ay deneyin)\n"
+                    "- Hisse kodu doğru mu? (büyük harf, .IS eklemeyin)")"
+
             return
         st.session_state.update({"df": df, "symbol": symbol,
                                   "matches": None, "selected": None})
