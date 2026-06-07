@@ -758,10 +758,7 @@ def main():
         with st.spinner(f"{symbol} yükleniyor..."):
             df = fetch_ticker(symbol, period)
         if df is None:
-            st.error(f"'{symbol}' için veri alınamadı. Olası nedenler:\n"
-                    "- Hisse az işlem görüyor olabilir\n"
-                    "- Dönem kısaltın (örn. 6 Ay deneyin)\n"
-                    "- Hisse kodu doğru mu? (büyük harf, .IS eklemeyin)")"
+            st.error(f"'{symbol}' için veri alınamadı. Hisse az işlem görüyor olabilir, dönem kısaltın veya hisse kodunu kontrol edin.")
 
             return
         st.session_state.update({"df": df, "symbol": symbol,
