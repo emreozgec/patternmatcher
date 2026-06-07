@@ -941,12 +941,12 @@ def main():
     date_list = [d.date() for d in df.index]
     mid = len(date_list) // 2
     c_s, c_e = st.columns(2)
-    with c_s:
-        sel_start = st.date_input("📍 Başlangıç", value=date_list[max(0,mid-20)],
-                                   min_value=date_list[0], max_value=date_list[-2])
-    with c_e:
-        sel_end = st.date_input("🏁 Bitiş", value=date_list[min(len(date_list)-1,mid+20)],
-                                 min_value=date_list[1], max_value=date_list[-1])
+    sel_start = c_s.date_input("📍 Başlangıç", value=date_list[max(0,mid-20)],
+                               min_value=date_list[0], max_value=date_list[-2],
+                               key="sel_start")
+    sel_end = c_e.date_input("🏁 Bitiş", value=date_list[min(len(date_list)-1,mid+20)],
+                             min_value=date_list[1], max_value=date_list[-1],
+                             key="sel_end")
 
     if sel_start >= sel_end:
         st.warning("Başlangıç bitiş tarihinden önce olmalı.")
