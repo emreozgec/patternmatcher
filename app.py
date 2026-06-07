@@ -6,7 +6,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
 
-# ── Sayfa ayarı ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="BIST Pattern Matcher",
     page_icon="📊",
@@ -25,84 +24,68 @@ st.markdown("""
     border-radius: 8px;
     padding: 12px !important;
 }
-.match-card {
-    background: #FFFFFF;
-    border: 1.5px solid #E5E9F0;
-    border-radius: 10px;
-    padding: 16px 12px;
-    text-align: center;
-    transition: all 0.2s;
-    cursor: pointer;
-}
-.match-card:hover { border-color: #1A56DB; box-shadow: 0 2px 8px rgba(26,86,219,0.1); }
-.match-card.selected { border-color: #1A56DB; background: #EFF6FF; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── BIST hisse listeleri ───────────────────────────────────────────────────────
-BIST30 = [
-    "AKBNK","ARCLK","ASELS","BIMAS","EKGYO","EREGL","FROTO","GARAN","HALKB",
-    "ISCTR","KCHOL","KOZAA","KOZAL","KRDMD","MGROS","ODAS","PETKM","PGSUS",
-    "SAHOL","SISE","SOKM","TAVHL","TCELL","THYAO","TKFEN","TOASO","TTKOM",
-    "TUPRS","VAKBN","YKBNK"
-]
+# ── BIST listeleri ─────────────────────────────────────────────────────────────
+BIST30 = ["AKBNK","ARCLK","ASELS","BIMAS","EKGYO","EREGL","FROTO","GARAN","HALKB",
+          "ISCTR","KCHOL","KOZAA","KOZAL","KRDMD","MGROS","ODAS","PETKM","PGSUS",
+          "SAHOL","SISE","SOKM","TAVHL","TCELL","THYAO","TKFEN","TOASO","TTKOM",
+          "TUPRS","VAKBN","YKBNK"]
 
 BIST100 = list(set(BIST30 + [
     "AEFES","AGESA","AKGRT","AKSA","AKSEN","ALARK","ALBRK","ALFAS","ANELE",
     "ANHYT","ANSGR","ASTOR","AYGAZ","BAGFS","BERA","BFREN","BRISA","BTCIM",
-    "BUCIM","CIMSA","CLEBI","CMBTN","DEVA","DOHOL","ECILC","ECZYT","EDIP",
-    "EGEEN","EGGUB","EKIZ","ENKAI","ERBOS","ERSU","ESCAR","EUPWR","FENER",
-    "GENIL","GENTS","GEREL","GESAN","GLYHO","GMTAS","GOODY","GOZDE","GRSEL",
-    "GUBRF","GWIND","HATEK","HEKTS","HLGYO","HOROZ","HUBVC","HURGZ","IEYHO",
-    "IHEVA","IHLAS","INDES","INFO","INVEO","IPEKE","ISBIR","ISYAT","IZENR",
-    "JANTS","KAREL","KARSN","KARTN","KCHOL","KERVT","KLKIM","KLMSN","KMPUR",
-    "KONTR","KOPOL","KORDS","KOZAA","KOZAL","KRDMD","LOGO","MAVI","MEDTR",
-    "MGROS","MPARK","NATEN","NETAS","NUHCM","ODAS","OTKAR","OYAKC","PETKM",
-    "PETUN","PGSUS","PKART","POLHO","PRKAB","PRKME","RUBNS","SAHOL","SANEL",
-    "SANFM","SARKY","SASA","SELEC","SELGD","SISE","SKBNK","SKTAS","SOKM",
-    "TATGD","TAVHL","TCELL","THYAO","TKFEN","TOASO","TTKOM","TTRAK","TUPRS",
-    "ULUSE","VAKBN","VAKKO","VESBE","YKBNK","YUNSA","ZEDUR"
-]))
+    "BUCIM","CIMSA","CLEBI","DEVA","DOHOL","ECILC","ECZYT","EDIP","EGEEN",
+    "EGGUB","ENKAI","ERBOS","EUPWR","FENER","GENIL","GENTS","GEREL","GESAN",
+    "GLYHO","GMTAS","GOODY","GOZDE","GRSEL","GUBRF","GWIND","HATEK","HEKTS",
+    "HLGYO","HOROZ","HUBVC","HURGZ","INDES","INFO","INVEO","ISBIR","ISYAT",
+    "IZENR","KAREL","KARSN","KARTN","KERVT","KLKIM","KLMSN","KONTR","KOPOL",
+    "KORDS","LOGO","MAVI","MEDTR","NATEN","NETAS","NUHCM","OTKAR","OYAKC",
+    "PETUN","PKART","POLHO","PRKAB","SARKY","SASA","SELEC","SELGD","SKBNK",
+    "SKTAS","SOKM","TATGD","TCELL","TKFEN","TTRAK","TUPRS","ULUSE","VESBE","YUNSA"]))
 
 ALL_BIST = list(set(BIST100 + [
-    "ACSEL","ADEL","AGYO","AKFEN","AKMGY","ALKIM","ALKLC","ARDYZ","ARSAN",
-    "ATAGY","ATEKS","ATLAS","AVGYO","AYCES","AYEN","AZTEK","BASGZ","BAYRK",
-    "BIENY","BJKAS","BNTAS","BOBET","BORLS","BRKSN","BRKVY","BRMEN","BSOKE",
-    "BURCE","BURVA","BVSAN","CANTE","CARFA","CEMAS","CEMTS","CEOEM","COSMO",
-    "CRDFA","CRFSA","CUSAN","CVKMD","DAGHL","DARDL","DENGE","DGGYO","DITAS",
-    "DMSAS","DNISI","DOBUR","DOCO","DOGUB","DOKTA","DURDO","DYOBY","DZGYO",
-    "EDATA","EDIP","EGEEN","EGPRO","EGSER","ELITE","EMKEL","EMNIS","EPLAS",
-    "ESCOM","ESEN","ETILR","ETYAT","EUHOL","EUREN","EUYO","FENER","FLAP",
-    "FONET","FORMT","FORTE","FZLGY","GARFA","GEDIK","GEDZA","GENIL","GLBMD",
-    "GLRYH","GOKNR","GOLTS","GRTRK","GSDDE","GSDHO","GSRAY","HDFGS","HEDEF",
-    "HKTM","HRKET","HTTBT","HUNER","ICBCT","IDEAS","IDGYO","IHAAS","IHGZT",
-    "IHLGM","IHYAY","IMASM","INTEM","ISATR","ITTFK","IZFAS","IZINV","IZMDC",
-    "KARSN","KATMR","KAYSE","KCAER","KFEIN","KGYO","KIMMR","KLGYO","KLRHO",
-    "KLSER","KNFRT","KONAK","KOPOL","KOTON","KRONT","KRPLS","KRSTL","KRTEK",
-    "KRVGD","KSTUR","KTLEV","KTSK","KUTPO","KUYAS","LIDER","LIDFA","LINK",
-    "LKMNH","LMKDC","LRSHO","LUKSK","MAALT","MAGEN","MAKIM","MAKTK","MANAS",
-    "MARBL","MARKA","MARTI","MEGMT","MEPET","MERCN","MERIT","MERKO","METRO",
-    "METUR","MIATK","MIPAZ","MMCAS","MNDRS","MNDTR","MOBTL","MOGAN","MRDIN",
-    "MRGYO","MRSHL","MSGYO","MTRKS","MZHLD","NIBAS","NILYT","NTHOL","NTTUR",
-    "NUGYO","OBAMS","OBASE","ODINE","OFSYM","ONCSM","ORCAY","ORGE","ORMA",
-    "OSMEN","OSTIM","OYYAT","OZGYO","OZKGY","OZRDN","OZSUB","PAGYO","PAMEL",
-    "PAPIL","PARSN","PASEU","PCKMT","PCYOT","PEGYO","PENGD","PENTA","PINSU",
-    "PKENT","PLTUR","PNLSN","POLTK","PRDGS","PRZMA","PSDTC","PTOFS","RTALB",
-    "RYGYO","SAMAT","SANKO","SAYAS","SDTTR","SEGYO","SEKFK","SEKUR","SELVA",
-    "SEYKM","SILVR","SNKRN","SODSN","SONME","SRVGY","SUWEN","TBORG","TDGYO",
-    "TEKTU","TGSAS","TLMAN","TMSN","TOASO","TRCAS","TRGYO","TRILC","TSGYO",
-    "TUCLK","TUKAS","TUREX","TURGG","TURSG","TZNGY","ULUFA","ULUUN","UNLU",
-    "USAK","UTPYA","UZERB","VAKFN","VANGD","VBTYZ","VERUS","VKFYO","VKGYO",
-    "VRGYO","WNDMR","YATAS","YAYLA","YGYO","YIGIT","YKSLN","ZRGYO"
-]))
+    "ACSEL","ADEL","AGYO","AKFEN","AKMGY","ALKIM","ARDYZ","ARSAN","ATAGY",
+    "ATEKS","ATLAS","AVGYO","AYCES","AYEN","BAGFS","BASGZ","BAYRK","BIENY",
+    "BJKAS","BNTAS","BOBET","BORLS","BRKSN","BRKVY","BRMEN","BSOKE","BURCE",
+    "BURVA","BVSAN","CANTE","CARFA","CEMAS","CEMTS","CEOEM","COSMO","CRDFA",
+    "CRFSA","CUSAN","CVKMD","DAGHL","DARDL","DENGE","DGGYO","DITAS","DMSAS",
+    "DNISI","DOBUR","DOCO","DOGUB","DOKTA","DURDO","DYOBY","DZGYO","EDATA",
+    "EGPRO","EGSER","ELITE","EMKEL","EMNIS","EPLAS","ESCOM","ESEN","ETILR",
+    "ETYAT","EUHOL","EUREN","EUYO","FLAP","FONET","FORMT","FORTE","FZLGY",
+    "GARFA","GEDIK","GEDZA","GLBMD","GLRYH","GOKNR","GOLTS","GRTRK","GSDDE",
+    "GSDHO","GSRAY","HDFGS","HEDEF","HKTM","HRKET","HTTBT","HUNER","ICBCT",
+    "IDEAS","IDGYO","IHAAS","IHEVA","IHLAS","IHLGM","IHYAY","IMASM","INTEM",
+    "ISATR","ITTFK","IZFAS","IZINV","IZMDC","KATMR","KAYSE","KCAER","KFEIN",
+    "KGYO","KIMMR","KLGYO","KLRHO","KLSER","KMPUR","KNFRT","KONAK","KOTON",
+    "KRONT","KRPLS","KRSTL","KRTEK","KRVGD","KSTUR","KTLEV","KTSK","KUTPO",
+    "KUYAS","LIDER","LIDFA","LINK","LKMNH","LMKDC","LRSHO","LUKSK","MAALT",
+    "MAGEN","MAKIM","MAKTK","MANAS","MARBL","MARKA","MARTI","MEGMT","MEPET",
+    "MERCN","MERIT","MERKO","METRO","METUR","MIATK","MIPAZ","MMCAS","MNDRS",
+    "MNDTR","MOBTL","MOGAN","MRDIN","MRGYO","MRSHL","MSGYO","MTRKS","MZHLD",
+    "NIBAS","NILYT","NTHOL","NTTUR","NUGYO","OBAMS","OBASE","ODINE","OFSYM",
+    "ONCSM","ORCAY","ORGE","ORMA","OSMEN","OSTIM","OYYAT","OZGYO","OZKGY",
+    "OZRDN","OZSUB","PAGYO","PAMEL","PAPIL","PARSN","PASEU","PCKMT","PCYOT",
+    "PEGYO","PENGD","PENTA","PINSU","PKENT","PLTUR","PNLSN","POLTK","PRDGS",
+    "PRZMA","PSDTC","PTOFS","RTALB","RUBNS","RYGYO","SAMAT","SANFM","SANKO",
+    "SAYAS","SDTTR","SEGYO","SEKFK","SEKUR","SELVA","SEYKM","SILVR","SNKRN",
+    "SODSN","SONME","SRVGY","SUWEN","TBORG","TDGYO","TEKTU","TGSAS","TLMAN",
+    "TMSN","TRCAS","TRGYO","TRILC","TSGYO","TUCLK","TUKAS","TUREX","TURGG",
+    "TURSG","TZNGY","ULUFA","ULUUN","UNLU","USAK","UTPYA","UZERB","VAKFN",
+    "VANGD","VBTYZ","VERUS","VKFYO","VKGYO","VRGYO","WNDMR","YATAS","YAYLA",
+    "YGYO","YIGIT","YKSLN","ZEDUR","ZRGYO"]))
 
-# ── Yardımcı fonksiyonlar ─────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# BÖLÜM 1: VERİ ÇEKME
+# ══════════════════════════════════════════════════════════════════════════════
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_ticker(symbol, period="1y"):
     try:
         ticker = symbol if symbol.endswith(".IS") else symbol + ".IS"
-        df = yf.download(ticker, period=period, auto_adjust=True, progress=False)
+        df = yf.download(ticker, period=period, auto_adjust=True,
+                         progress=False, threads=False)
         if df.empty or len(df) < 20:
             return None
         if isinstance(df.columns, pd.MultiIndex):
@@ -113,7 +96,7 @@ def fetch_ticker(symbol, period="1y"):
     except:
         return None
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_batch(tickers, period="2y"):
     results = {}
     symbols = [t + ".IS" for t in tickers]
@@ -134,6 +117,10 @@ def fetch_batch(tickers, period="2y"):
         pass
     return results
 
+# ══════════════════════════════════════════════════════════════════════════════
+# BÖLÜM 2: TEKNİK İNDİKATÖR HESAPLAMA
+# ══════════════════════════════════════════════════════════════════════════════
+
 def zscore(arr):
     arr = np.array(arr, dtype=float)
     mu, sigma = arr.mean(), arr.std()
@@ -141,83 +128,350 @@ def zscore(arr):
         return np.zeros_like(arr)
     return (arr - mu) / sigma
 
-def daily_returns(arr):
-    arr = np.array(arr, dtype=float)
-    if len(arr) < 2:
-        return np.zeros(len(arr))
-    rets = np.diff(arr) / (np.abs(arr[:-1]) + 1e-9)
-    return rets
+def daily_returns(prices):
+    prices = np.array(prices, dtype=float)
+    if len(prices) < 2:
+        return np.zeros(1)
+    return np.diff(prices) / (np.abs(prices[:-1]) + 1e-9)
 
-def pearson(a, b):
-    if len(a) != len(b) or len(a) < 3:
-        return 0.0
-    if np.std(a) < 1e-9 or np.std(b) < 1e-9:
-        return 0.0
-    return float(np.corrcoef(a, b)[0, 1])
+def calc_rsi(prices, n=14):
+    prices = np.array(prices, dtype=float)
+    if len(prices) < n + 1:
+        return np.full(len(prices), 50.0)
+    deltas = np.diff(prices)
+    gains = np.where(deltas > 0, deltas, 0.0)
+    losses = np.where(deltas < 0, -deltas, 0.0)
+    rsi = np.full(len(prices), 50.0)
+    ag = gains[:n].mean()
+    al = losses[:n].mean()
+    for i in range(n, len(deltas)):
+        ag = (ag * (n-1) + gains[i]) / n
+        al = (al * (n-1) + losses[i]) / n
+        rs = ag / (al + 1e-9)
+        rsi[i+1] = 100 - 100 / (1 + rs)
+    return rsi
 
-def dtw_score(s1, s2, band=None):
+def calc_macd(prices, fast=12, slow=26, sig=9):
+    prices = np.array(prices, dtype=float)
+    def ema(x, n):
+        k = 2/(n+1)
+        e = [x[0]]
+        for v in x[1:]:
+            e.append(v*k + e[-1]*(1-k))
+        return np.array(e)
+    if len(prices) < slow:
+        return np.zeros(len(prices)), np.zeros(len(prices)), np.zeros(len(prices))
+    e12 = ema(prices, fast)
+    e26 = ema(prices, slow)
+    macd = e12 - e26
+    signal = ema(macd, sig)
+    hist = macd - signal
+    return macd, signal, hist
+
+def calc_volume_profile(volumes, prices, n_bins=5):
+    """Hacim profilini normalize et — hangi fiyat seviyelerinde hacim yoğun"""
+    volumes = np.array(volumes, dtype=float)
+    prices = np.array(prices, dtype=float)
+    if volumes.sum() < 1e-9:
+        return np.zeros(n_bins)
+    p_min, p_max = prices.min(), prices.max()
+    if p_max == p_min:
+        return np.zeros(n_bins)
+    bins = np.linspace(p_min, p_max, n_bins + 1)
+    profile = np.zeros(n_bins)
+    for i in range(n_bins):
+        mask = (prices >= bins[i]) & (prices < bins[i+1])
+        profile[i] = volumes[mask].sum()
+    total = profile.sum()
+    return profile / total if total > 0 else profile
+
+def detect_formations(prices, volumes):
+    """
+    Formasyon skoru hesapla:
+    - Double Top/Bottom
+    - Head & Shoulders
+    - Trend kanalı (ascending/descending)
+    - Breakout (hacim artışıyla fiyat kırılması)
+    Sonuç: dict of formation scores (0-1)
+    """
+    prices = np.array(prices, dtype=float)
+    volumes = np.array(volumes, dtype=float)
+    n = len(prices)
+    scores = {
+        'double_top': 0.0,
+        'double_bottom': 0.0,
+        'head_shoulders': 0.0,
+        'ascending_channel': 0.0,
+        'descending_channel': 0.0,
+        'breakout_up': 0.0,
+        'breakout_down': 0.0,
+    }
+    if n < 10:
+        return scores
+
+    # Yerel tepe ve dipler bul
+    def local_extrema(arr, order=3):
+        peaks, troughs = [], []
+        for i in range(order, len(arr)-order):
+            window = arr[i-order:i+order+1]
+            if arr[i] == window.max() and arr[i] > arr[i-1] and arr[i] > arr[i+1]:
+                peaks.append(i)
+            if arr[i] == window.min() and arr[i] < arr[i-1] and arr[i] < arr[i+1]:
+                troughs.append(i)
+        return peaks, troughs
+
+    peaks, troughs = local_extrema(prices, order=max(2, n//8))
+
+    # Double Top: 2 tepe yakın seviyede
+    if len(peaks) >= 2:
+        for i in range(len(peaks)-1):
+            p1, p2 = prices[peaks[i]], prices[peaks[i+1]]
+            diff = abs(p1-p2) / (max(p1,p2)+1e-9)
+            if diff < 0.03:  # %3 tolerans
+                scores['double_top'] = max(scores['double_top'], 1 - diff/0.03)
+
+    # Double Bottom: 2 dip yakın seviyede
+    if len(troughs) >= 2:
+        for i in range(len(troughs)-1):
+            t1, t2 = prices[troughs[i]], prices[troughs[i+1]]
+            diff = abs(t1-t2) / (max(t1,t2)+1e-9)
+            if diff < 0.03:
+                scores['double_bottom'] = max(scores['double_bottom'], 1 - diff/0.03)
+
+    # Head & Shoulders: 3 tepe, ortadaki yüksek
+    if len(peaks) >= 3:
+        for i in range(len(peaks)-2):
+            l, h, r = prices[peaks[i]], prices[peaks[i+1]], prices[peaks[i+2]]
+            if h > l and h > r:
+                sym = 1 - abs(l-r)/(h+1e-9)
+                height_ratio = min(l,r)/h
+                if height_ratio > 0.85 and sym > 0.7:
+                    scores['head_shoulders'] = max(scores['head_shoulders'], sym * height_ratio)
+
+    # Trend kanalı — linear regression
+    x = np.arange(n)
+    slope, intercept = np.polyfit(x, prices, 1)
+    residuals = prices - (slope * x + intercept)
+    r2 = 1 - residuals.var() / (prices.var() + 1e-9)
+
+    if r2 > 0.6:
+        norm_slope = slope / (prices.mean() + 1e-9)
+        if norm_slope > 0.001:
+            scores['ascending_channel'] = min(1.0, r2 * (norm_slope * 100))
+        elif norm_slope < -0.001:
+            scores['descending_channel'] = min(1.0, r2 * abs(norm_slope * 100))
+
+    # Breakout: son %20'de hacim spike + fiyat kırılması
+    split = int(n * 0.8)
+    if split > 0 and len(volumes) == n:
+        base_vol = volumes[:split].mean()
+        recent_vol = volumes[split:].mean()
+        base_price = prices[:split].max()
+        recent_price = prices[split:].max()
+        vol_ratio = recent_vol / (base_vol + 1e-9)
+        if vol_ratio > 1.5 and recent_price > base_price * 1.02:
+            scores['breakout_up'] = min(1.0, (vol_ratio - 1) * 0.5)
+        elif vol_ratio > 1.5 and prices[split:].min() < prices[:split].min() * 0.98:
+            scores['breakout_down'] = min(1.0, (vol_ratio - 1) * 0.5)
+
+    return scores
+
+def extract_features(prices, volumes):
+    """
+    Tüm özellikleri tek bir fonksiyonda hesapla.
+    Returns: dict of feature arrays/scalars
+    """
+    prices = np.array(prices, dtype=float)
+    volumes = np.array(volumes, dtype=float)
+    n = len(prices)
+
+    rets = daily_returns(prices)
+    rsi = calc_rsi(prices)
+    macd, signal, hist = calc_macd(prices)
+    vol_norm = volumes / (volumes.mean() + 1e-9)
+    formations = detect_formations(prices, volumes)
+
+    return {
+        'price_z': zscore(prices),
+        'returns': rets,
+        'returns_mean': rets.mean(),
+        'returns_std': rets.std(),
+        'returns_skew': float(pd.Series(rets).skew()),
+        'rsi': rsi,
+        'rsi_mean': rsi.mean(),
+        'rsi_end': rsi[-1],
+        'macd_hist': hist,
+        'macd_trend': 1.0 if hist[-1] > 0 else -1.0,
+        'volume_z': zscore(vol_norm),
+        'volume_trend': np.polyfit(np.arange(n), vol_norm, 1)[0],
+        'vol_profile': calc_volume_profile(volumes, prices),
+        'formations': formations,
+        'price_range': (prices.max() - prices.min()) / (prices.mean() + 1e-9),
+    }
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BÖLÜM 3: ÇOK BOYUTLU BENZERLİK MOTORU
+# ══════════════════════════════════════════════════════════════════════════════
+
+def dtw_similarity(s1, s2, band=None):
+    """DTW mesafesi → 0-1 benzerlik skoru"""
     n = len(s1)
+    if n == 0:
+        return 0.0
     band = band or max(2, n // 8)
     dtw = np.full((n+1, n+1), np.inf)
     dtw[0, 0] = 0
     for i in range(1, n+1):
-        j0 = max(1, i - band)
-        j1 = min(n, i + band) + 1
+        j0 = max(1, i-band)
+        j1 = min(n, i+band) + 1
         for j in range(j0, j1):
             cost = abs(s1[i-1] - s2[j-1])
-            dtw[i, j] = cost + min(dtw[i-1,j], dtw[i,j-1], dtw[i-1,j-1])
-    dist = dtw[n, n] / n
+            dtw[i,j] = cost + min(dtw[i-1,j], dtw[i,j-1], dtw[i-1,j-1])
+    dist = dtw[n,n] / n
     return max(0.0, 1.0 - dist)
 
-def similarity(tpl_z, tpl_ret, win_z, win_ret):
-    p_z = (pearson(tpl_z, win_z) + 1) / 2       # 0-1
-    p_ret = (pearson(tpl_ret, win_ret) + 1) / 2  # 0-1
-    d = dtw_score(tpl_z, win_z)                   # 0-1
-    # Ağırlık: %35 pearson-z + %40 DTW + %25 getiri korelasyonu
-    score = 0.35 * p_z + 0.40 * d + 0.25 * p_ret
-    return round(score * 100, 1)
+def pearson_sim(a, b):
+    """Pearson korelasyonu → 0-1"""
+    if len(a) != len(b) or len(a) < 3:
+        return 0.5
+    if np.std(a) < 1e-9 or np.std(b) < 1e-9:
+        return 0.5
+    r = float(np.corrcoef(a, b)[0,1])
+    return (r + 1) / 2
 
-def find_patterns(template, all_data, top_n=5, min_sim=70, future_mult=1.5):
-    tpl = np.array(template, dtype=float)
-    tpl_z = zscore(tpl)
-    tpl_ret = daily_returns(tpl)
-    n = len(tpl)
+def formation_similarity(f1, f2):
+    """İki formasyon seti arasındaki benzerlik"""
+    keys = list(f1.keys())
+    if not keys:
+        return 0.5
+    diffs = [abs(f1[k] - f2[k]) for k in keys]
+    return 1.0 - min(1.0, np.mean(diffs))
+
+def composite_score(feat_tpl, feat_win):
+    """
+    6 boyutlu kompozit benzerlik skoru.
+    Her boyut 0-1 arası → ağırlıklı ortalama.
+
+    Ağırlıklar (toplam=1.0):
+    - Fiyat şekli (DTW):        0.28
+    - Fiyat şekli (Pearson):    0.12
+    - Günlük getiri dağılımı:   0.20
+    - Hacim profili:            0.15
+    - Momentum (RSI+MACD):      0.15
+    - Formasyonlar:             0.10
+    """
+    # 1. Fiyat şekli — DTW
+    s_dtw = dtw_similarity(feat_tpl['price_z'], feat_win['price_z'])
+
+    # 2. Fiyat şekli — Pearson
+    s_pearson = pearson_sim(feat_tpl['price_z'], feat_win['price_z'])
+
+    # 3. Günlük getiri dağılımı
+    # a) Getiri serisinin korelasyonu
+    min_len = min(len(feat_tpl['returns']), len(feat_win['returns']))
+    if min_len >= 3:
+        s_ret_corr = pearson_sim(feat_tpl['returns'][:min_len], feat_win['returns'][:min_len])
+    else:
+        s_ret_corr = 0.5
+    # b) İstatistik benzerliği (ortalama, std, skewness)
+    s_ret_mean = 1 - min(1.0, abs(feat_tpl['returns_mean'] - feat_win['returns_mean']) / (abs(feat_tpl['returns_mean']) + 0.001))
+    s_ret_std  = 1 - min(1.0, abs(feat_tpl['returns_std'] - feat_win['returns_std']) / (feat_tpl['returns_std'] + 0.001))
+    s_ret_skew = 1 - min(1.0, abs(feat_tpl['returns_skew'] - feat_win['returns_skew']) / (abs(feat_tpl['returns_skew']) + 0.5))
+    s_returns = 0.5 * s_ret_corr + 0.2 * s_ret_mean + 0.2 * s_ret_std + 0.1 * s_ret_skew
+
+    # 4. Hacim profili
+    s_vol_profile = pearson_sim(feat_tpl['vol_profile'], feat_win['vol_profile'])
+    s_vol_trend = 1 - min(1.0, abs(feat_tpl['volume_trend'] - feat_win['volume_trend']))
+    s_vol_shape = pearson_sim(feat_tpl['volume_z'], feat_win['volume_z'])
+    s_volume = 0.4 * s_vol_profile + 0.3 * s_vol_trend + 0.3 * s_vol_shape
+
+    # 5. Momentum (RSI + MACD)
+    min_len2 = min(len(feat_tpl['rsi']), len(feat_win['rsi']))
+    s_rsi_shape = pearson_sim(feat_tpl['rsi'][:min_len2], feat_win['rsi'][:min_len2]) if min_len2 >= 3 else 0.5
+    s_rsi_level = 1 - min(1.0, abs(feat_tpl['rsi_end'] - feat_win['rsi_end']) / 50.0)
+    min_len3 = min(len(feat_tpl['macd_hist']), len(feat_win['macd_hist']))
+    s_macd = pearson_sim(feat_tpl['macd_hist'][:min_len3], feat_win['macd_hist'][:min_len3]) if min_len3 >= 3 else 0.5
+    s_macd_dir = 1.0 if feat_tpl['macd_trend'] == feat_win['macd_trend'] else 0.0
+    s_momentum = 0.3 * s_rsi_shape + 0.2 * s_rsi_level + 0.3 * s_macd + 0.2 * s_macd_dir
+
+    # 6. Formasyonlar
+    s_formation = formation_similarity(feat_tpl['formations'], feat_win['formations'])
+
+    # Ağırlıklı kompozit
+    score = (
+        0.28 * s_dtw +
+        0.12 * s_pearson +
+        0.20 * s_returns +
+        0.15 * s_volume +
+        0.15 * s_momentum +
+        0.10 * s_formation
+    )
+    return round(score * 100, 1), {
+        'fiyat_dtw': round(s_dtw * 100, 1),
+        'fiyat_pearson': round(s_pearson * 100, 1),
+        'getiri': round(s_returns * 100, 1),
+        'hacim': round(s_volume * 100, 1),
+        'momentum': round(s_momentum * 100, 1),
+        'formasyon': round(s_formation * 100, 1),
+    }
+
+def find_patterns(template_prices, template_volumes, all_data,
+                  top_n=5, min_sim=65, future_mult=1.5):
+    """
+    Çok boyutlu pattern matching.
+    Template özelliklerini hesapla, tüm hisselerde sliding window ile ara.
+    """
+    tpl_prices = np.array(template_prices, dtype=float)
+    tpl_volumes = np.array(template_volumes, dtype=float)
+    n = len(tpl_prices)
     fut_win = min(int(n * future_mult), 90)
+
+    # Template özelliklerini hesapla
+    feat_tpl = extract_features(tpl_prices, tpl_volumes)
+
     results = []
 
     for ticker, df in all_data.items():
         closes = df['Close'].values.astype(float)
+        volumes = df['Volume'].values.astype(float)
         dates = df.index
+
         if len(closes) < n + fut_win + 10:
             continue
 
         max_i = len(closes) - n - fut_win
-        step = max(1, n // 6)
+        step = max(1, n // 5)
 
-        # Kaba tarama
-        best_sim, best_i = -1, 0
+        # Kaba tarama — sadece fiyat DTW kullan (hızlı)
+        best_score, best_i = -1, 0
         for i in range(0, max_i, step):
-            w = closes[i:i+n]
-            wz = zscore(w)
-            wr = daily_returns(w)
-            s = similarity(tpl_z, tpl_ret, wz, wr)
-            if s > best_sim:
-                best_sim, best_i = s, i
+            w_prices = closes[i:i+n]
+            w_z = zscore(w_prices)
+            quick_s = dtw_similarity(feat_tpl['price_z'], w_z) * 100
+            if quick_s > best_score:
+                best_score, best_i = quick_s, i
 
-        # İnce tarama ±step
-        for i in range(max(0, best_i - step), min(max_i+1, best_i + step + 1)):
-            w = closes[i:i+n]
-            wz = zscore(w)
-            wr = daily_returns(w)
-            s = similarity(tpl_z, tpl_ret, wz, wr)
-            if s > best_sim:
-                best_sim, best_i = s, i
+        # İnce tarama — en iyi bölge etrafında tam kompozit skor
+        refine_range = range(max(0, best_i - step), min(max_i+1, best_i + step + 1))
+        best_full_score, best_breakdown = -1, {}
+        best_i_final = best_i
 
-        if best_sim < min_sim:
+        for i in refine_range:
+            w_prices = closes[i:i+n]
+            w_volumes = volumes[i:i+n]
+            feat_win = extract_features(w_prices, w_volumes)
+            full_s, breakdown = composite_score(feat_tpl, feat_win)
+            if full_s > best_full_score:
+                best_full_score = full_s
+                best_breakdown = breakdown
+                best_i_final = i
+
+        if best_full_score < min_sim:
             continue
 
-        ms, me = best_i, best_i + n
+        ms, me = best_i_final, best_i_final + n
         match_closes = closes[ms:me]
+        match_volumes = volumes[ms:me]
         match_dates = dates[ms:me]
         future_closes = closes[me:me+fut_win]
         future_dates = dates[me:me+fut_win]
@@ -232,9 +486,11 @@ def find_patterns(template, all_data, top_n=5, min_sim=70, future_mult=1.5):
 
         results.append({
             'ticker': ticker,
-            'similarity': best_sim,
+            'similarity': best_full_score,
+            'breakdown': best_breakdown,
             'ms': ms, 'me': me,
             'match_closes': match_closes,
+            'match_volumes': match_volumes,
             'match_dates': match_dates,
             'future_closes': future_closes,
             'future_dates': future_dates,
@@ -251,67 +507,70 @@ def find_patterns(template, all_data, top_n=5, min_sim=70, future_mult=1.5):
     results.sort(key=lambda x: x['similarity'], reverse=True)
     return results[:top_n]
 
-# ── Grafikler ─────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# BÖLÜM 4: GRAFİKLER
+# ══════════════════════════════════════════════════════════════════════════════
 
 COLORS = ['#1A56DB','#E3A008','#0E9F6E','#9061F9','#E02424']
 
-def chart_opts():
+def base_layout(height=360, title=""):
     return dict(
         template='plotly_white',
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='#FFFFFF',
-        margin=dict(l=10, r=10, t=40, b=10),
+        margin=dict(l=10, r=10, t=45, b=10),
         hovermode='x unified',
+        height=height,
         legend=dict(orientation='h', y=1.12, font=dict(size=11)),
-        xaxis=dict(gridcolor='rgba(0,0,0,0.06)', showgrid=True),
-        yaxis=dict(gridcolor='rgba(0,0,0,0.06)', showgrid=True),
+        title=dict(text=title, font=dict(size=13, color='#1A1A2E')),
+        xaxis=dict(gridcolor='rgba(0,0,0,0.05)', showgrid=True,
+                   tickfont=dict(size=10)),
+        yaxis=dict(gridcolor='rgba(0,0,0,0.05)', showgrid=True,
+                   tickfont=dict(size=10)),
     )
 
-def fig_main(df, symbol, sel_start=None, sel_end=None):
+def fig_main_chart(df, symbol, sel_start=None, sel_end=None):
     dates = [d.strftime('%Y-%m-%d') for d in df.index]
     closes = df['Close'].values
+    volumes = df['Volume'].values
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=dates, y=closes, name=symbol,
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        row_heights=[0.75, 0.25], vertical_spacing=0.03)
+
+    fig.add_trace(go.Scatter(x=dates, y=closes, name=symbol,
         line=dict(color='#1A56DB', width=2),
-        hovertemplate='%{x}: %{y:.2f} ₺<extra></extra>'
-    ))
+        hovertemplate='%{x}: %{y:.2f} ₺<extra></extra>'), row=1, col=1)
 
     if sel_start and sel_end:
         mask = (df.index >= pd.Timestamp(sel_start)) & (df.index <= pd.Timestamp(sel_end))
         seg_df = df[mask]
         if len(seg_df) > 0:
             seg_dates = [d.strftime('%Y-%m-%d') for d in seg_df.index]
-            fig.add_trace(go.Scatter(
-                x=seg_dates, y=seg_df['Close'].values,
-                name='Seçili Şablon',
-                line=dict(color='#E3A008', width=3),
-                hovertemplate='%{x}: %{y:.2f} ₺<extra>Şablon</extra>'
-            ))
-            fig.add_vrect(
-                x0=seg_dates[0], x1=seg_dates[-1],
-                fillcolor='rgba(227,160,8,0.08)', line_width=0,
+            fig.add_trace(go.Scatter(x=seg_dates, y=seg_df['Close'].values,
+                name='Şablon', line=dict(color='#E3A008', width=3.5),
+                hovertemplate='%{x}: %{y:.2f} ₺<extra>Şablon</extra>'), row=1, col=1)
+            fig.add_vrect(x0=seg_dates[0], x1=seg_dates[-1],
+                fillcolor='rgba(227,160,8,0.07)', line_width=0,
                 annotation_text='Şablon', annotation_position='top left',
-                annotation_font_color='#E3A008', annotation_font_size=10
-            )
+                annotation_font_color='#E3A008', annotation_font_size=10)
 
-    opts = chart_opts()
-    opts.update(dict(height=360, title=dict(
-        text=f'<b>{symbol}</b> — Şablon Seçimi',
-        font=dict(size=14, color='#1A1A2E')
-    )))
-    fig.update_layout(**opts)
-    fig.update_xaxes(type='date', tickformat='%b %Y', tickangle=-30,
-                     tickfont=dict(size=10))
-    fig.update_yaxes(ticksuffix=' ₺', tickfont=dict(size=10))
+    # Hacim
+    vol_colors = ['rgba(14,159,110,0.5)' if closes[i] >= closes[i-1]
+                  else 'rgba(224,36,36,0.5)' for i in range(len(closes))]
+    fig.add_trace(go.Bar(x=dates, y=volumes, name='Hacim',
+        marker_color=vol_colors, showlegend=False,
+        hovertemplate='%{y:,.0f}<extra>Hacim</extra>'), row=2, col=1)
+
+    layout = base_layout(400, f'<b>{symbol}</b> — Şablon Seçimi')
+    layout['xaxis2'] = dict(type='date', tickformat='%b %Y', tickangle=-30, tickfont=dict(size=10))
+    layout['yaxis'] = dict(gridcolor='rgba(0,0,0,0.05)', ticksuffix=' ₺', tickfont=dict(size=10))
+    layout['yaxis2'] = dict(gridcolor='rgba(0,0,0,0.05)', tickfont=dict(size=9))
+    fig.update_layout(**layout)
     return fig
 
 def fig_history(result, symbol):
-    """Hissenin TÜM geçmişi — eşleşen bölge + sonrası işaretli"""
     closes = result['all_closes']
-    dates_raw = result['all_dates']
-    dates = [pd.Timestamp(d).strftime('%Y-%m-%d') for d in dates_raw]
+    dates = [pd.Timestamp(d).strftime('%Y-%m-%d') for d in result['all_dates']]
     ms, me = result['ms'], result['me']
     fut = result['future_closes']
     fut_pct = result['fut_pct']
@@ -319,212 +578,188 @@ def fig_history(result, symbol):
     icon = '▲' if fut_pct >= 0 else '▼'
 
     fig = go.Figure()
-
-    # Tüm geçmiş
-    fig.add_trace(go.Scatter(
-        x=dates, y=closes, name=result['ticker'],
-        line=dict(color='rgba(100,130,180,0.45)', width=1.5),
-        hovertemplate='%{x}: %{y:.2f} ₺<extra></extra>'
-    ))
-
-    # Eşleşen bölge
-    fig.add_trace(go.Scatter(
-        x=dates[ms:me], y=closes[ms:me],
+    fig.add_trace(go.Scatter(x=dates, y=closes, name=result['ticker'],
+        line=dict(color='rgba(100,130,180,0.4)', width=1.5),
+        hovertemplate='%{x}: %{y:.2f} ₺<extra></extra>'))
+    fig.add_trace(go.Scatter(x=dates[ms:me], y=closes[ms:me],
         name=f'Eşleşen Bölge (%{result["similarity"]})',
         line=dict(color='#E3A008', width=3.5),
-        hovertemplate='%{x}: %{y:.2f} ₺<extra>Eşleşen</extra>'
-    ))
+        hovertemplate='%{x}: %{y:.2f} ₺<extra>Eşleşen</extra>'))
 
-    # Sonraki hareket
     if len(fut) > 1:
         fut_dates = [pd.Timestamp(d).strftime('%Y-%m-%d') for d in result['future_dates']]
-        fig.add_trace(go.Scatter(
-            x=fut_dates, y=fut,
+        fig.add_trace(go.Scatter(x=fut_dates, y=fut,
             name=f'Sonraki Hareket ({fut_pct:+.1f}%)',
             line=dict(color=c_fut, width=2.5, dash='dot'),
-            hovertemplate='%{x}: %{y:.2f} ₺<extra>Sonrası</extra>'
-        ))
+            hovertemplate='%{x}: %{y:.2f} ₺<extra>Sonrası</extra>'))
 
-    # Vurgu bölgeleri
-    if ms < me and len(dates) > me:
+    if ms < me and me < len(dates):
         fig.add_vrect(x0=dates[ms], x1=dates[me-1],
-                      fillcolor='rgba(227,160,8,0.08)', line_width=0,
-                      annotation_text=f'Eşleşme\n{result["start_date"]}',
-                      annotation_position='top left',
-                      annotation_font_color='#E3A008', annotation_font_size=9)
-        if len(fut) > 1:
-            fig.add_vrect(
-                x0=dates[me], x1=dates[min(me+len(fut)-1, len(dates)-1)],
+            fillcolor='rgba(227,160,8,0.08)', line_width=0,
+            annotation_text=f'Eşleşme\n{result["start_date"]}',
+            annotation_position='top left',
+            annotation_font_color='#E3A008', annotation_font_size=9)
+        if len(fut) > 1 and me < len(dates):
+            end_idx = min(me + len(fut) - 1, len(dates)-1)
+            fig.add_vrect(x0=dates[me], x1=dates[end_idx],
                 fillcolor=f'{"rgba(14,159,110,0.06)" if fut_pct>=0 else "rgba(224,36,36,0.06)"}',
                 line_width=0,
                 annotation_text=f'{icon} {fut_pct:+.1f}%',
                 annotation_position='top right',
-                annotation_font_color=c_fut, annotation_font_size=9
-            )
+                annotation_font_color=c_fut, annotation_font_size=9)
 
-    opts = chart_opts()
-    opts.update(dict(height=340, title=dict(
-        text=f'<b>{result["ticker"]}</b> — Tüm Geçmiş | '
-             f'Eşleşme: <b>{result["start_date"]} → {result["end_date"]}</b>',
-        font=dict(size=13, color='#1A1A2E')
-    )))
-    fig.update_layout(**opts)
-    fig.update_xaxes(type='date', tickformat='%b %Y', tickangle=-30,
-                     tickfont=dict(size=10))
-    fig.update_yaxes(ticksuffix=' ₺', tickfont=dict(size=10))
+    layout = base_layout(340, f'<b>{result["ticker"]}</b> — Tarihsel Konum | '
+                              f'Eşleşme: <b>{result["start_date"]} → {result["end_date"]}</b>')
+    layout['xaxis'] = dict(type='date', tickformat='%b %Y', tickangle=-30,
+                           gridcolor='rgba(0,0,0,0.05)', tickfont=dict(size=10))
+    layout['yaxis'] = dict(gridcolor='rgba(0,0,0,0.05)', ticksuffix=' ₺', tickfont=dict(size=10))
+    fig.update_layout(**layout)
     return fig
 
-def fig_normalize(template, results, symbol):
-    """Normalize overlay — şablon + tüm eşleşmeler + sonraki hareketler"""
-    tpl_z = zscore(np.array(template, dtype=float))
+def fig_normalize(template_prices, results, symbol):
+    tpl_z = zscore(np.array(template_prices, dtype=float))
     n = len(tpl_z)
-    x_tpl = list(range(n))
-
     fig = go.Figure()
-
-    # Şablon
-    fig.add_trace(go.Scatter(
-        x=x_tpl, y=tpl_z, name=f'{symbol} (Şablon)',
-        line=dict(color='#1A1A2E', width=3),
-        hovertemplate='Şablon: %{y:.2f}<extra></extra>'
-    ))
+    fig.add_trace(go.Scatter(x=list(range(n)), y=tpl_z,
+        name=f'{symbol} (Şablon)', line=dict(color='#1A1A2E', width=3),
+        hovertemplate='Şablon: %{y:.2f}<extra></extra>'))
 
     for i, r in enumerate(results):
         c = COLORS[i % len(COLORS)]
         seg_z = zscore(r['match_closes'])
-        fig.add_trace(go.Scatter(
-            x=x_tpl, y=seg_z,
+        fig.add_trace(go.Scatter(x=list(range(n)), y=seg_z,
             name=f"{r['ticker']} (%{r['similarity']})",
-            line=dict(color=c, width=1.8, dash='dot'),
-            opacity=0.8,
-            hovertemplate=f"{r['ticker']}: %{{y:.2f}}<extra></extra>"
-        ))
-
+            line=dict(color=c, width=1.8, dash='dot'), opacity=0.85,
+            hovertemplate=f"{r['ticker']}: %{{y:.2f}}<extra></extra>"))
         if len(r['future_closes']) > 2:
             fut = r['future_closes']
             last = float(seg_z[-1])
             fut_z = zscore(fut)
-            fut_scaled = [last + v * 0.35 for v in fut_z]
-            x_fut = list(range(n, n + len(fut_scaled)))
-            fig.add_trace(go.Scatter(
-                x=x_fut, y=fut_scaled,
+            fut_s = [last + v * 0.35 for v in fut_z]
+            x_fut = list(range(n, n+len(fut_s)))
+            fig.add_trace(go.Scatter(x=x_fut, y=fut_s,
                 name=f"{r['ticker']} sonrası ({r['fut_pct']:+.1f}%)",
-                line=dict(color=c, width=1.5, dash='longdash'),
-                opacity=0.55,
-                hovertemplate=f"{r['ticker']} sonrası: %{{y:.2f}}<extra></extra>"
-            ))
+                line=dict(color=c, width=1.5, dash='longdash'), opacity=0.5,
+                hovertemplate=f"{r['ticker']} sonrası: %{{y:.2f}}<extra></extra>"))
 
-    fig.add_vline(x=n - 0.5, line_dash='dash',
-                  line_color='rgba(0,0,0,0.25)', line_width=2,
-                  annotation_text='← Geçmiş | Tahmin →',
+    fig.add_vline(x=n-0.5, line_dash='dash', line_color='rgba(0,0,0,0.2)',
+                  line_width=2, annotation_text='← Geçmiş | Tahmin →',
                   annotation_font_color='#555', annotation_font_size=10)
     fig.add_vrect(x0=0, x1=n-1, fillcolor='rgba(227,160,8,0.04)', line_width=0)
 
-    opts = chart_opts()
-    opts.update(dict(height=380, title=dict(
-        text='Normalize Karşılaştırma — Eşleşen Bölgeler + Sonraki Hareketler',
-        font=dict(size=13, color='#1A1A2E')
-    )))
-    fig.update_layout(**opts)
-    fig.update_xaxes(title='Gün', tickfont=dict(size=10))
-    fig.update_yaxes(title='Z-Score', tickfont=dict(size=10))
+    layout = base_layout(380, 'Normalize Karşılaştırma — Eşleşen Bölgeler + Sonraki Hareketler')
+    layout['xaxis']['title'] = 'Gün'
+    layout['yaxis']['title'] = 'Z-Score'
+    fig.update_layout(**layout)
     return fig
 
-def fig_compare(result, template, symbol):
-    """Şablon vs eşleşen bölge normalize karşılaştırması"""
-    tpl_z = zscore(np.array(template, dtype=float))
+def fig_compare(result, template_prices, symbol):
+    tpl_z = zscore(np.array(template_prices, dtype=float))
     seg_z = zscore(result['match_closes'])
     n = len(tpl_z)
-    x = list(range(n))
     fut_pct = result['fut_pct']
     c_fut = '#0E9F6E' if fut_pct >= 0 else '#E02424'
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=x, y=tpl_z, name=f'{symbol} (Şablon)',
-        line=dict(color='#1A56DB', width=2.5),
-        hovertemplate='Şablon: %{y:.2f}<extra></extra>'
-    ))
-    fig.add_trace(go.Scatter(
-        x=x, y=seg_z,
+    fig.add_trace(go.Scatter(x=list(range(n)), y=tpl_z,
+        name=f'{symbol} (Şablon)', line=dict(color='#1A56DB', width=2.5),
+        hovertemplate='Şablon: %{y:.2f}<extra></extra>'))
+    fig.add_trace(go.Scatter(x=list(range(n)), y=seg_z,
         name=f"{result['ticker']} — Eşleşen (%{result['similarity']})",
         line=dict(color='#E3A008', width=2, dash='dot'),
-        hovertemplate=f"{result['ticker']}: %{{y:.2f}}<extra></extra>"
-    ))
+        hovertemplate=f"{result['ticker']}: %{{y:.2f}}<extra></extra>"))
 
     if len(result['future_closes']) > 2:
         fut = result['future_closes']
         last = float(seg_z[-1])
         fut_z = zscore(fut)
-        fut_scaled = [last + v * 0.35 for v in fut_z]
-        x_fut = list(range(n, n + len(fut_scaled)))
-        fig.add_trace(go.Scatter(
-            x=x_fut, y=fut_scaled,
-            name=f"Sonraki Hareket ({fut_pct:+.1f}%)",
+        fut_s = [last + v * 0.35 for v in fut_z]
+        x_fut = list(range(n, n+len(fut_s)))
+        fig.add_trace(go.Scatter(x=x_fut, y=fut_s,
+            name=f'Sonraki Hareket ({fut_pct:+.1f}%)',
             line=dict(color=c_fut, width=2, dash='longdash'),
-            hovertemplate=f'Sonrası: %{{y:.2f}}<extra></extra>'
-        ))
-        fig.add_vline(x=n - 0.5, line_dash='dash',
-                      line_color='rgba(0,0,0,0.2)', line_width=1.5,
+            hovertemplate=f'Sonrası: %{{y:.2f}}<extra></extra>'))
+        fig.add_vline(x=n-0.5, line_dash='dash', line_color='rgba(0,0,0,0.15)',
+                      line_width=1.5,
                       annotation_text=f'{"▲" if fut_pct>=0 else "▼"} {fut_pct:+.1f}%',
                       annotation_font_color=c_fut, annotation_font_size=11)
 
-    opts = chart_opts()
-    opts.update(dict(height=280, title=dict(
-        text=f'Şablon Uyumu — {symbol} vs {result["ticker"]}',
-        font=dict(size=12, color='#1A1A2E')
-    )))
-    fig.update_layout(**opts)
-    fig.update_xaxes(title='Gün', tickfont=dict(size=10))
-    fig.update_yaxes(title='Z-Score', tickfont=dict(size=10))
+    layout = base_layout(280, f'Şablon Uyumu — {symbol} vs {result["ticker"]}')
+    layout['xaxis']['title'] = 'Gün'
+    layout['yaxis']['title'] = 'Z-Score'
+    fig.update_layout(**layout)
     return fig
 
-# ── Ana uygulama ──────────────────────────────────────────────────────────────
+def fig_breakdown_radar(breakdown, ticker):
+    """Benzerlik boyutlarını radar grafiğiyle göster"""
+    labels = ['Fiyat (DTW)', 'Fiyat (Pearson)', 'Getiri', 'Hacim', 'Momentum', 'Formasyon']
+    values = [
+        breakdown.get('fiyat_dtw', 0),
+        breakdown.get('fiyat_pearson', 0),
+        breakdown.get('getiri', 0),
+        breakdown.get('hacim', 0),
+        breakdown.get('momentum', 0),
+        breakdown.get('formasyon', 0),
+    ]
+    fig = go.Figure(go.Scatterpolar(
+        r=values + [values[0]],
+        theta=labels + [labels[0]],
+        fill='toself',
+        fillcolor='rgba(26,86,219,0.15)',
+        line=dict(color='#1A56DB', width=2),
+        name=ticker
+    ))
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(visible=True, range=[0,100], tickfont=dict(size=9)),
+            angularaxis=dict(tickfont=dict(size=10))
+        ),
+        showlegend=False,
+        height=280,
+        margin=dict(l=40, r=40, t=40, b=40),
+        paper_bgcolor='rgba(0,0,0,0)',
+        title=dict(text=f'{ticker} — Benzerlik Profili', font=dict(size=12, color='#1A1A2E'))
+    )
+    return fig
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BÖLÜM 5: ANA UYGULAMA
+# ══════════════════════════════════════════════════════════════════════════════
 
 def main():
-    # Başlık
-    col_t, col_s = st.columns([3, 1])
-    with col_t:
-        st.markdown("## 📊 BIST Pattern Matcher")
-        st.caption("Hisse senedi şablon eşleştirme — geçmişteki benzer hareketleri bul, sonrasını gör")
-    with col_s:
-        st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
-
+    st.markdown("## 📊 BIST Pattern Matcher")
+    st.caption("Çok boyutlu hisse senedi şablon eşleştirme — fiyat + hacim + momentum + formasyon")
     st.divider()
 
-    # ── ADIM 1: Hisse seç ──
+    # ── ADIM 1 ──
     st.markdown("### 1️⃣ Hisse ve Dönem")
-    c1, c2, c3 = st.columns([2, 1, 1])
+    c1, c2, c3 = st.columns([2,1,1])
     with c1:
         symbol = st.text_input("Hisse kodu", placeholder="THYAO, EREGL, ASELS...",
                                 key="symbol_input").strip().upper()
     with c2:
         period = st.selectbox("Dönem", ["6mo","1y","2y"],
-                               format_func=lambda x: {"6mo":"6 Ay","1y":"1 Yıl","2y":"2 Yıl"}[x],
-                               index=1)
+            format_func=lambda x: {"6mo":"6 Ay","1y":"1 Yıl","2y":"2 Yıl"}[x], index=1)
     with c3:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         load = st.button("📥 Yükle", type="primary", use_container_width=True)
 
     # Hızlı seçim
     samples = ["THYAO","EREGL","ASELS","GARAN","BIMAS","KCHOL","SASA","TOASO","TUPRS","AKBNK"]
-    cols = st.columns(len(samples))
+    scols = st.columns(len(samples))
     for i, s in enumerate(samples):
-        if cols[i].button(s, key=f"q_{s}", use_container_width=True):
+        if scols[i].button(s, key=f"q_{s}", use_container_width=True):
             st.session_state["symbol_input"] = s
             st.rerun()
 
-    # Veri yükle
     if load and symbol:
         with st.spinner(f"{symbol} yükleniyor..."):
             df = fetch_ticker(symbol, period)
         if df is None:
-            st.error(f"'{symbol}' bulunamadı. Hisse kodu doğru mu?")
+            st.error(f"'{symbol}' bulunamadı.")
             return
-        st.session_state["df"] = df
-        st.session_state["symbol"] = symbol
-        st.session_state["matches"] = None
-        st.session_state["selected"] = None
+        st.session_state.update({"df": df, "symbol": symbol,
+                                  "matches": None, "selected": None})
 
     df = st.session_state.get("df")
     sym = st.session_state.get("symbol", "")
@@ -534,96 +769,114 @@ def main():
 
     st.divider()
 
-    # ── ADIM 2: Tarih seçimi ──
+    # ── ADIM 2 ──
     st.markdown("### 2️⃣ Şablon Aralığı")
-    st.caption("Grafikte incelemek istediğiniz fiyat hareketini tarih seçicilerle belirleyin.")
-
     date_list = [d.date() for d in df.index]
     mid = len(date_list) // 2
-
     c_s, c_e = st.columns(2)
     with c_s:
-        sel_start = st.date_input("📍 Başlangıç", value=date_list[max(0, mid-15)],
+        sel_start = st.date_input("📍 Başlangıç", value=date_list[max(0,mid-20)],
                                    min_value=date_list[0], max_value=date_list[-2])
     with c_e:
-        sel_end = st.date_input("🏁 Bitiş", value=date_list[min(len(date_list)-1, mid+15)],
+        sel_end = st.date_input("🏁 Bitiş", value=date_list[min(len(date_list)-1,mid+20)],
                                  min_value=date_list[1], max_value=date_list[-1])
 
     if sel_start >= sel_end:
-        st.warning("Başlangıç tarihi bitiş tarihinden önce olmalı.")
+        st.warning("Başlangıç bitiş tarihinden önce olmalı.")
         return
 
     sel_start_ts = pd.Timestamp(sel_start)
     sel_end_ts = pd.Timestamp(sel_end)
-    segment = df.loc[sel_start_ts:sel_end_ts]['Close']
-
-    if len(segment) < 5:
+    seg_df = df.loc[sel_start_ts:sel_end_ts]
+    if len(seg_df) < 5:
         st.warning("En az 5 günlük aralık seçin.")
         return
 
-    # Grafik
-    fig = fig_main(df, sym, sel_start_ts, sel_end_ts)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig_main_chart(df, sym, sel_start_ts, sel_end_ts),
+                    use_container_width=True)
+
+    last_date = df.index[-1].strftime('%d.%m.%Y')
+    st.caption(f"📅 Son veri: **{last_date}** — {len(df)} gün")
 
     # Şablon istatistikleri
-    pct = (segment.iloc[-1] - segment.iloc[0]) / segment.iloc[0] * 100
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Şablon Uzunluğu", f"{len(segment)} gün")
-    m2.metric("Başlangıç", f"{segment.iloc[0]:.2f} ₺")
-    m3.metric("Bitiş", f"{segment.iloc[-1]:.2f} ₺")
-    m4.metric("Değişim", f"{pct:+.1f}%")
+    seg_closes = seg_df['Close'].values
+    seg_vols = seg_df['Volume'].values
+    seg_rets = daily_returns(seg_closes)
+    pct = (seg_closes[-1] - seg_closes[0]) / seg_closes[0] * 100
+    rsi_last = calc_rsi(seg_closes)[-1]
+    _, _, macd_hist = calc_macd(seg_closes)
+    fmts = detect_formations(seg_closes, seg_vols)
+    top_fmt = max(fmts, key=fmts.get)
+    top_fmt_score = fmts[top_fmt]
+
+    m1,m2,m3,m4,m5,m6 = st.columns(6)
+    m1.metric("Uzunluk", f"{len(seg_df)} gün")
+    m2.metric("Değişim", f"{pct:+.1f}%")
+    m3.metric("Ort. Günlük", f"{seg_rets.mean()*100:+.2f}%")
+    m4.metric("RSI", f"{rsi_last:.0f}")
+    m5.metric("MACD", f"{'↑' if macd_hist[-1]>0 else '↓'} {macd_hist[-1]:.3f}")
+    m6.metric("Formasyon", f"{top_fmt.replace('_',' ').title()}" if top_fmt_score > 0.3 else "—")
 
     st.divider()
 
-    # ── ADIM 3: Tarama ──
-    st.markdown("### 3️⃣ BIST Tarama")
-
-    c_scope, c_sim, c_btn = st.columns([2, 1, 1])
+    # ── ADIM 3 ──
+    st.markdown("### 3️⃣ Tarama")
+    c_scope, c_sim, c_btn = st.columns([2,1,1])
     with c_scope:
-        scope = st.radio("Kapsam", ["BIST 30", "BIST 100", "Tüm BIST"],
-                          horizontal=True)
+        scope = st.radio("Kapsam", ["BIST 30","BIST 100","Tüm BIST"], horizontal=True)
     with c_sim:
-        min_sim = st.slider("Min. Benzerlik %", 60, 90, 72, 2)
+        min_sim = st.slider("Min. Benzerlik %", 55, 85, 65, 1)
     with c_btn:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         scan = st.button("🔍 Tara", type="primary", use_container_width=True)
 
+    # Ağırlık açıklaması
+    with st.expander("ℹ️ Algoritma — Nasıl Eşleştiriyor?"):
+        st.markdown("""
+        **6 boyutlu kompozit skor** (toplam %100):
+
+        | Boyut | Ağırlık | Ne Ölçüyor |
+        |-------|---------|-----------|
+        | Fiyat Şekli (DTW) | %28 | Dynamic Time Warping ile fiyat hareketi benzerliği |
+        | Fiyat Şekli (Pearson) | %12 | Korelasyon bazlı fiyat uyumu |
+        | Günlük Getiri Dağılımı | %20 | Günlük % hareketlerin ort, std, çarpıklık benzerliği |
+        | Hacim Profili | %15 | Hacim dağılımı + hacim trendi uyumu |
+        | Momentum (RSI+MACD) | %15 | RSI seviyesi ve MACD sinyal yönü benzerliği |
+        | Formasyonlar | %10 | Double Top/Bottom, H&S, Trend kanalı, Breakout uyumu |
+        """)
+
     if scan:
-        if scope == "BIST 30":
-            scan_list = [t for t in BIST30 if t != sym]
-        elif scope == "BIST 100":
-            scan_list = [t for t in BIST100 if t != sym]
-        else:
-            scan_list = [t for t in ALL_BIST if t != sym]
+        scan_list = {"BIST 30": BIST30, "BIST 100": BIST100, "Tüm BIST": ALL_BIST}[scope]
+        scan_list = [t for t in scan_list if t != sym]
 
         prog = st.progress(0, text=f"📥 {len(scan_list)} hisse indiriliyor...")
         with st.spinner(""):
             all_data = fetch_batch(scan_list, period="2y")
-        prog.progress(50, text=f"🔍 {len(all_data)} hisse taranıyor...")
-        template = segment.values.astype(float)
-        matches = find_patterns(template, all_data, top_n=5, min_sim=min_sim)
+        prog.progress(50, text=f"🔍 {len(all_data)} hisse taranıyor ({scope})...")
+        matches = find_patterns(seg_closes, seg_vols, all_data,
+                                top_n=5, min_sim=min_sim)
         prog.progress(100, text="✅ Tamamlandı!")
-        import time; time.sleep(0.4); prog.empty()
+        import time; time.sleep(0.3); prog.empty()
 
-        st.session_state["matches"] = matches
-        st.session_state["template"] = template
-        st.session_state["selected"] = None
+        st.session_state.update({"matches": matches,
+                                  "template_closes": seg_closes,
+                                  "template_volumes": seg_vols,
+                                  "selected": None})
         st.rerun()
 
     # ── SONUÇLAR ──
     matches = st.session_state.get("matches")
-    template = st.session_state.get("template")
+    template_closes = st.session_state.get("template_closes")
     if matches is None:
         return
 
     st.divider()
-
     if len(matches) == 0:
         st.warning(f"**%{min_sim}** üzeri benzerlik bulunamadı. Eşiği düşürün veya farklı aralık deneyin.")
         return
 
     st.markdown(f"### 📊 En Benzer {len(matches)} Hisse")
-    st.caption("Bir hisseye tıklayarak detaylı analiz görün.")
+    st.caption("Bir hisseye tıklayarak detay görün — tarihsel konum, normalize karşılaştırma, benzerlik profili.")
 
     # Kartlar
     card_cols = st.columns(len(matches))
@@ -633,26 +886,33 @@ def main():
         fut_pct = r['fut_pct']
         c_fut = '#0E9F6E' if fut_pct >= 0 else '#E02424'
         icon = '▲' if fut_pct >= 0 else '▼'
+        bd = r['breakdown']
 
         with card_cols[i]:
+            bg = '#EFF6FF' if is_sel else '#FFFFFF'
             border = f'2px solid {c}' if is_sel else '1.5px solid #E5E9F0'
-            bg = '#F0F7FF' if is_sel else '#FFFFFF'
             st.markdown(f"""
             <div style='background:{bg};border:{border};border-radius:10px;
                         padding:14px 10px;text-align:center'>
                 <div style='font-size:16px;font-weight:700;color:#1A1A2E'>{r['ticker']}</div>
-                <div style='font-size:10px;color:#888;margin:3px 0'>
-                    {r['start_date']}<br>{r['end_date']}
+                <div style='font-size:10px;color:#888;margin:2px 0'>
+                    {r['start_date']} → {r['end_date']}
                 </div>
                 <div style='margin:8px 0'>
-                    <div style='font-size:10px;color:#888;letter-spacing:1px'>BENZERLİK</div>
+                    <div style='font-size:10px;color:#888'>GENEL BENZERLİK</div>
                     <div style='font-size:26px;font-weight:700;color:{c}'>%{r['similarity']}</div>
                 </div>
-                <div style='margin:6px 0'>
+                <div style='font-size:10px;color:#888;text-align:left;padding:0 4px'>
+                    📐 Fiyat: %{bd.get('fiyat_dtw',0):.0f} &nbsp;
+                    📊 Getiri: %{bd.get('getiri',0):.0f}<br>
+                    📦 Hacim: %{bd.get('hacim',0):.0f} &nbsp;
+                    ⚡ Mom: %{bd.get('momentum',0):.0f}
+                </div>
+                <div style='margin:8px 0'>
                     <div style='font-size:10px;color:#888'>SONRASI</div>
                     <div style='font-size:20px;font-weight:700;color:{c_fut}'>{icon} {fut_pct:+.1f}%</div>
                 </div>
-                <div style='font-size:11px;color:#888'>
+                <div style='font-size:10px;color:#aaa'>
                     ↑{r['fut_max']:+.1f}% / ↓{r['fut_min']:.1f}%
                 </div>
             </div>
@@ -672,38 +932,51 @@ def main():
             st.divider()
             st.markdown(f"### 🔎 {selected} — Detay Analiz")
 
-            tab1, tab2, tab3 = st.tabs([
+            tab1, tab2, tab3, tab4 = st.tabs([
                 "📅 Tarihsel Konum",
                 "🔍 Şablon Uyumu",
-                "📈 Tüm Eşleşmeler"
+                "📈 Tüm Eşleşmeler",
+                "🎯 Benzerlik Profili"
             ])
 
             with tab1:
                 st.plotly_chart(fig_history(sel, sym), use_container_width=True)
-                st.caption(f"**{selected}** hissesinin tüm geçmişi. Sarı bölge eşleşen dönem, noktalı çizgi sonraki hareketi gösteriyor.")
+                st.caption(f"**{selected}** hissesinin tüm geçmişi. Sarı = eşleşen dönem, noktalı = sonraki hareket.")
 
             with tab2:
-                st.plotly_chart(fig_compare(sel, template, sym), use_container_width=True)
-                st.caption("Şablon (mavi) ve eşleşen bölge (sarı) normalize edilmiş halde. Noktalı çizgi o dönemden sonra ne olduğunu gösteriyor.")
+                st.plotly_chart(fig_compare(sel, template_closes, sym), use_container_width=True)
+                st.caption("Z-score normalize fiyat karşılaştırması. Şekil ne kadar örtüşüyor?")
 
             with tab3:
-                st.plotly_chart(fig_normalize(template, matches, sym), use_container_width=True)
-                st.caption("Tüm eşleşmeler üst üste. Dikey çizginin sağı geçmişteki 'sonraki hareket' — tahmin için referans.")
+                st.plotly_chart(fig_normalize(template_closes, matches, sym), use_container_width=True)
+                st.caption("Tüm eşleşmeler üst üste. Dikey çizgi sonrası geçmişteki 'sonraki hareket'.")
 
-            # İstatistik kutusu
-            st.markdown("#### 📋 Özet İstatistikler")
-            s1, s2, s3, s4, s5 = st.columns(5)
-            s1.metric("Benzerlik", f"%{sel['similarity']}")
-            s2.metric("Sonraki Hareket", f"{sel['fut_pct']:+.1f}%")
-            s3.metric("Maks. Kazanç", f"+{sel['fut_max']:.1f}%")
-            s4.metric("Maks. Kayıp", f"{sel['fut_min']:.1f}%")
-            s5.metric("Süre", f"{sel['fut_win']} gün")
-
+            with tab4:
+                col_r, col_s = st.columns([1, 1])
+                with col_r:
+                    st.plotly_chart(fig_breakdown_radar(sel['breakdown'], selected),
+                                    use_container_width=True)
+                with col_s:
+                    st.markdown("#### 📋 Boyut Detayları")
+                    bd = sel['breakdown']
+                    for k, v in bd.items():
+                        label = {'fiyat_dtw':'Fiyat Şekli (DTW)','fiyat_pearson':'Fiyat (Pearson)',
+                                 'getiri':'Günlük Getiri','hacim':'Hacim Profili',
+                                 'momentum':'Momentum','formasyon':'Formasyon'}.get(k, k)
+                        bar = int(v / 5)
+                        st.markdown(f"**{label}:** %{v}  \n{'█'*bar}{'░'*(20-bar)}")
+                    st.divider()
+                    st.metric("Genel Benzerlik", f"%{sel['similarity']}")
+                    s1,s2,s3 = st.columns(3)
+                    s1.metric("Sonraki", f"{sel['fut_pct']:+.1f}%")
+                    s2.metric("Maks ↑", f"+{sel['fut_max']:.1f}%")
+                    s3.metric("Maks ↓", f"{sel['fut_min']:.1f}%")
     else:
-        # Kimse seçilmediyse overlay göster
         st.divider()
-        st.markdown("#### 📈 Normalize Karşılaştırma")
-        st.plotly_chart(fig_normalize(template, matches, sym), use_container_width=True)
+        if matches and template_closes is not None:
+            st.markdown("#### 📈 Normalize Karşılaştırma")
+            st.plotly_chart(fig_normalize(template_closes, matches, sym),
+                            use_container_width=True)
 
 if __name__ == "__main__":
     main()
