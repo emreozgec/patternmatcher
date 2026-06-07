@@ -510,6 +510,170 @@ def find_patterns(template_prices, template_volumes, all_data,
     return results[:top_n]
 
 # ══════════════════════════════════════════════════════════════════════════════
+# BÖLÜM 3B: KONSENSÜS ANALİZİ
+# ══════════════════════════════════════════════════════════════════════════════
+
+def calc_consensus(matches, current_price):
+    """
+    Ağırlıklı konsensüs analizi.
+    Benzerlik skoru ağırlık olarak kullanılır.
+    
+    Döndürür:
+    - direction: "YÜKSELİŞ" / "DÜŞÜŞ" / "KARARSIZ"
+    - confidence: 0-100 güven skoru
+    - weighted_pct: ağırlıklı ortalama beklenen değişim %
+    - target_low / target_high: hedef fiyat aralığı
+    - agreement_ratio: aynı yönde kaç tanesi (örn 4/5)
+    - dispersion: sonuçların dağılımı (düşükse tutarlı, yüksekse karmaşık)
+    """
+    if not matches:
+        return None
+
+    weights = np.array([r['similarity'] for r in matches], dtype=float)
+    weights = weights / weights.sum()  # normalize
+
+    pcts = np.array([r['fut_pct'] for r in matches], dtype=float)
+    maxs = np.array([r['fut_max'] for r in matches], dtype=float)
+    mins = np.array([r['fut_min'] for r in matches], dtype=float)
+
+    # Ağırlıklı ortalama değişim
+    weighted_pct = float(np.dot(weights, pcts))
+
+    # Ağırlıklı hedef aralık
+    weighted_max = float(np.dot(weights, maxs))
+    weighted_min = float(np.dot(weights, mins))
+    target_high = current_price * (1 + weighted_max / 100)
+    target_low = current_price * (1 + weighted_min / 100)
+
+    # Yön oylaması (ağırlıklı)
+    up_weight = sum(w for w, p in zip(weights, pcts) if p > 0)
+    down_weight = sum(w for w, p in zip(weights, pcts) if p <= 0)
+    up_count = sum(1 for p in pcts if p > 0)
+    down_count = sum(1 for p in pcts if p <= 0)
+
+    if up_weight > 0.6:
+        direction = "YÜKSELİŞ"
+    elif down_weight > 0.6:
+        direction = "DÜŞÜŞ"
+    else:
+        direction = "KARARSIZ"
+
+    # Güven skoru:
+    # - Yön konsensüsü (tek yönde yüksek ağırlık)
+    # - Hareket büyüklüğü tutarlılığı (std düşükse güven yüksek)
+    direction_conf = max(up_weight, down_weight) * 100  # 50-100 arası
+    dispersion = float(np.std(pcts))  # düşükse tutarlı
+    dispersion_penalty = min(40, dispersion * 2)  # yüksek dağılım ceza
+    avg_similarity = float(np.dot(weights, [r['similarity'] for r in matches]))
+    similarity_bonus = (avg_similarity - 65) / 35 * 20  # 65-100 arası → 0-20 bonus
+
+    confidence = max(0, min(100, direction_conf - dispersion_penalty + similarity_bonus))
+
+    agreement_ratio = f"{max(up_count,down_count)}/{len(matches)}"
+
+    return {
+        'direction': direction,
+        'confidence': round(confidence, 1),
+        'weighted_pct': round(weighted_pct, 2),
+        'target_high': round(target_high, 2),
+        'target_low': round(target_low, 2),
+        'target_pct_high': round(weighted_max, 2),
+        'target_pct_low': round(weighted_min, 2),
+        'agreement_ratio': agreement_ratio,
+        'up_count': up_count,
+        'down_count': down_count,
+        'dispersion': round(dispersion, 2),
+        'avg_similarity': round(avg_similarity, 1),
+        'individual': [{'ticker': r['ticker'], 'pct': r['fut_pct'],
+                        'weight': round(float(w)*100, 1), 'sim': r['similarity']}
+                       for r, w in zip(matches, weights)]
+    }
+
+
+def fig_consensus_chart(consensus, matches, template_closes, symbol):
+    """Fan grafiği — ağırlıklı ortalama + bireysel senaryolar"""
+    n = len(template_closes)
+    tpl_z = zscore(np.array(template_closes, dtype=float))
+
+    fig = go.Figure()
+
+    # Gri arka plan senaryolar
+    for i, r in enumerate(matches):
+        if len(r['future_closes']) > 1:
+            seg_z = zscore(r['match_closes'])
+            last = float(seg_z[-1])
+            fut_z = zscore(r['future_closes'])
+            fut_s = [last + v * 0.35 for v in fut_z]
+            x_fut = list(range(n, n + len(fut_s)))
+            c = '#0E9F6E' if r['fut_pct'] >= 0 else '#E02424'
+            fig.add_trace(go.Scatter(
+                x=x_fut, y=fut_s,
+                name=f"{r['ticker']} ({r['fut_pct']:+.1f}%)",
+                line=dict(color=c, width=1.2, dash='dot'),
+                opacity=0.4,
+                hovertemplate=f"{r['ticker']}: %{{y:.2f}}<extra></extra>"
+            ))
+
+    # Şablon
+    fig.add_trace(go.Scatter(
+        x=list(range(n)), y=tpl_z,
+        name=f'{symbol} (Şablon)',
+        line=dict(color='#1A1A2E', width=3),
+        hovertemplate='Şablon: %{y:.2f}<extra></extra>'
+    ))
+
+    # Ağırlıklı konsensüs çizgisi
+    # En uzun future uzunluğunu bul
+    max_fut = max((len(r['future_closes']) for r in matches if len(r['future_closes']) > 1), default=0)
+    if max_fut > 1:
+        weights = np.array([r['similarity'] for r in matches], dtype=float)
+        weights = weights / weights.sum()
+
+        # Her t anı için ağırlıklı ortalama normalize fiyat
+        consensus_line = []
+        seg_z_last = float(zscore(matches[0]['match_closes'])[-1])
+
+        for t in range(max_fut):
+            vals = []
+            ws = []
+            for r, w in zip(matches, weights):
+                if len(r['future_closes']) > t + 1:
+                    seg_z = zscore(r['match_closes'])
+                    last = float(seg_z[-1])
+                    fut_z = zscore(r['future_closes'])
+                    if t < len(fut_z):
+                        vals.append(last + fut_z[t] * 0.35)
+                        ws.append(w)
+            if vals:
+                ws_arr = np.array(ws)
+                ws_arr = ws_arr / ws_arr.sum()
+                consensus_line.append(float(np.dot(ws_arr, vals)))
+
+        if consensus_line:
+            x_cons = list(range(n, n + len(consensus_line)))
+            c_main = '#0E9F6E' if consensus['weighted_pct'] >= 0 else '#E02424'
+            fig.add_trace(go.Scatter(
+                x=x_cons, y=consensus_line,
+                name=f'Konsensüs ({consensus["weighted_pct"]:+.1f}%)',
+                line=dict(color=c_main, width=3, dash='solid'),
+                hovertemplate=f'Konsensüs: %{{y:.2f}}<extra></extra>'
+            ))
+
+    fig.add_vline(x=n - 0.5, line_dash='dash',
+                  line_color='rgba(0,0,0,0.2)', line_width=2,
+                  annotation_text='← Geçmiş | Konsensüs →',
+                  annotation_font_color='#555', annotation_font_size=10)
+    fig.add_vrect(x0=0, x1=n-1, fillcolor='rgba(227,160,8,0.04)', line_width=0)
+
+    layout = base_layout(360, 'Konsensüs Fan Grafiği — Ağırlıklı Ortalama + Bireysel Senaryolar')
+    layout['xaxis']['title'] = 'Gün'
+    layout['yaxis']['title'] = 'Z-Score'
+    fig.update_layout(**layout)
+    return fig
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # BÖLÜM 4: GRAFİKLER
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -880,6 +1044,74 @@ def main():
 
     st.markdown(f"### 📊 En Benzer {len(matches)} Hisse")
     st.caption("Bir hisseye tıklayarak detay görün — tarihsel konum, normalize karşılaştırma, benzerlik profili.")
+
+    # ── KONSENSÜS PANELİ ──
+    current_price = float(df['Close'].iloc[-1])
+    consensus = calc_consensus(matches, current_price)
+    if consensus:
+        direction = consensus['direction']
+        conf = consensus['confidence']
+        wpct = consensus['weighted_pct']
+        c_dir = '#0E9F6E' if direction == 'YÜKSELİŞ' else ('#E02424' if direction == 'DÜŞÜŞ' else '#E3A008')
+        icon_dir = '📈' if direction == 'YÜKSELİŞ' else ('📉' if direction == 'DÜŞÜŞ' else '↔️')
+
+        # Güven barı
+        conf_bar = int(conf / 5)
+        conf_color = '#0E9F6E' if conf >= 65 else ('#E3A008' if conf >= 45 else '#E02424')
+        conf_label = 'Yüksek Güven' if conf >= 65 else ('Orta Güven' if conf >= 45 else 'Düşük Güven')
+
+        st.markdown(f"""
+        <div style='background:#FFFFFF;border:1.5px solid {c_dir};border-radius:12px;
+                    padding:20px 24px;margin:12px 0 20px'>
+            <div style='display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px'>
+                <div>
+                    <div style='font-size:11px;color:#888;letter-spacing:1px;margin-bottom:4px'>KONSENSÜS YÖN</div>
+                    <div style='font-size:32px;font-weight:800;color:{c_dir}'>{icon_dir} {direction}</div>
+                    <div style='font-size:13px;color:#555;margin-top:4px'>
+                        {consensus["agreement_ratio"]} hisse aynı yönde &nbsp;|&nbsp;
+                        ↑{consensus["up_count"]} Yükseliş &nbsp; ↓{consensus["down_count"]} Düşüş
+                    </div>
+                </div>
+                <div style='text-align:center'>
+                    <div style='font-size:11px;color:#888;letter-spacing:1px;margin-bottom:4px'>BEKLENEN HAREKETTr</div>
+                    <div style='font-size:28px;font-weight:700;color:{c_dir}'>{wpct:+.1f}%</div>
+                    <div style='font-size:12px;color:#888'>{current_price:.2f} ₺ → {consensus["target_low"]:.2f} / {consensus["target_high"]:.2f} ₺</div>
+                </div>
+                <div style='text-align:center'>
+                    <div style='font-size:11px;color:#888;letter-spacing:1px;margin-bottom:4px'>GÜVEN SKORU</div>
+                    <div style='font-size:28px;font-weight:700;color:{conf_color}'>%{conf:.0f}</div>
+                    <div style='font-size:11px;color:{conf_color}'>{conf_label}</div>
+                    <div style='font-size:10px;color:#aaa;margin-top:2px'>{'█'*conf_bar}{'░'*(20-conf_bar)}</div>
+                </div>
+                <div style='text-align:center'>
+                    <div style='font-size:11px;color:#888;letter-spacing:1px;margin-bottom:4px'>HEDEF ARALIK</div>
+                    <div style='font-size:14px;font-weight:600;color:#0E9F6E'>↑ {consensus["target_pct_high"]:+.1f}%</div>
+                    <div style='font-size:14px;font-weight:600;color:#E02424'>↓ {consensus["target_pct_low"]:.1f}%</div>
+                    <div style='font-size:10px;color:#aaa;margin-top:2px'>Dağılım: ±{consensus["dispersion"]:.1f}%</div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Ağırlık tablosu
+        with st.expander("📊 Bireysel Ağırlıklar ve Katkılar"):
+            rows = []
+            for item in consensus['individual']:
+                yön = "📈 Yükseliş" if item['pct'] > 0 else "📉 Düşüş"
+                rows.append({
+                    "Hisse": item['ticker'],
+                    "Benzerlik": f"%{item['sim']}",
+                    "Ağırlık": f"%{item['weight']}",
+                    "Beklenen Hareket": f"{item['pct']:+.1f}%",
+                    "Yön": yön
+                })
+            import pandas as pd
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        # Konsensüs fan grafiği
+        st.plotly_chart(fig_consensus_chart(consensus, matches, template_closes, sym),
+                        use_container_width=True)
+    st.divider()
 
     # Kartlar
     card_cols = st.columns(len(matches))
