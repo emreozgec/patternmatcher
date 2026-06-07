@@ -1105,7 +1105,6 @@ def main():
                     "Beklenen Hareket": f"{item['pct']:+.1f}%",
                     "Yön": yön
                 })
-            import pandas as pd
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
         # Konsensüs fan grafiği
