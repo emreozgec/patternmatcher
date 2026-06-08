@@ -345,93 +345,265 @@ def composite_score(feat_tpl, feat_win):
         'formasyon': round(s_formation * 100, 1),
     }
 
+def piecewise_zscore(arr: np.ndarray, segments: int = 4) -> np.ndarray:
+    """
+    OPT-2: Piecewise normalizasyon.
+    Seriyi `segments` parçaya böler, her parçayı ayrı z-score yapar.
+    Trend içindeki lokal benzerlikleri standart z-score'dan çok daha iyi yakalar.
+    """
+    arr = np.array(arr, dtype=float)
+    n = len(arr)
+    if n < segments * 2:
+        return zscore(arr)
+    result = np.zeros(n)
+    seg_size = n // segments
+    for i in range(segments):
+        start = i * seg_size
+        end = n if i == segments - 1 else (i + 1) * seg_size
+        segment = arr[start:end]
+        mu, sigma = segment.mean(), segment.std()
+        result[start:end] = (segment - mu) / (sigma + 1e-9)
+    return result
+
+
+def hierarchical_search(tpl_z: np.ndarray, tpl_pz: np.ndarray,
+                         closes: np.ndarray, n: int, max_i: int) -> tuple:
+    """
+    OPT-1: 3 geçişli hiyerarşik tarama.
+
+    Geçiş 1 (çok hızlı): step=n//3 → top 5 bölge seç
+    Geçiş 2 (orta):      step=n//8 → top 5 bölge etrafında ±2*step
+    Geçiş 3 (hassas):    step=1    → en iyi bölge etrafında ±n//8
+
+    Standart tek geçişe kıyasla ~3x daha az hesaplama, çok daha az atlama.
+    """
+    if max_i <= 0:
+        return 0, -1.0
+
+    # ── Geçiş 1: Kaba tarama ──────────────────────────────────────────────────
+    step1 = max(1, n // 3)
+    candidates_1 = []
+    for i in range(0, max_i, step1):
+        w_z = zscore(closes[i:i+n])
+        # Sadece Pearson — çok hızlı
+        p = pearson_sim(tpl_z, w_z) * 100
+        candidates_1.append((i, p))
+    candidates_1.sort(key=lambda x: x[1], reverse=True)
+    top5 = [c[0] for c in candidates_1[:5]]
+
+    # ── Geçiş 2: Orta tarama ─────────────────────────────────────────────────
+    step2 = max(1, n // 8)
+    candidates_2 = []
+    seen = set()
+    for center in top5:
+        for i in range(max(0, center - step2*2), min(max_i+1, center + step2*2 + 1), step2):
+            if i in seen:
+                continue
+            seen.add(i)
+            w_z = zscore(closes[i:i+n])
+            w_pz = piecewise_zscore(closes[i:i+n])
+            # DTW + Pearson kombinasyonu
+            d = dtw_similarity(tpl_z, w_z) * 100
+            p = pearson_sim(tpl_pz, w_pz) * 100
+            score = 0.6 * d + 0.4 * p
+            candidates_2.append((i, score))
+    if not candidates_2:
+        return 0, -1.0
+    candidates_2.sort(key=lambda x: x[1], reverse=True)
+    best_mid_i = candidates_2[0][0]
+
+    # ── Geçiş 3: Hassas tarama ────────────────────────────────────────────────
+    step3 = max(1, n // 8)
+    best_i, best_score = best_mid_i, -1.0
+    for i in range(max(0, best_mid_i - step3), min(max_i+1, best_mid_i + step3 + 1)):
+        w_z = zscore(closes[i:i+n])
+        w_pz = piecewise_zscore(closes[i:i+n])
+        d = dtw_similarity(tpl_z, w_z) * 100
+        p = pearson_sim(tpl_pz, w_pz) * 100
+        score = 0.6 * d + 0.4 * p
+        if score > best_score:
+            best_score, best_i = score, i
+
+    return best_i, best_score
+
+
+def regime_weight(tpl_regime: str, match_regime: str) -> float:
+    """
+    OPT-3: Koşullu rejim ağırlıklandırma.
+    Şablon ile eşleşen dönemin rejimi aynıysa bonus ağırlık.
+    Farklı rejimse ceza uygula.
+    """
+    if tpl_regime == match_regime:
+        return 1.25   # %25 bonus
+    # Yakın rejimler
+    compatible = {
+        'trend_bull': {'trend_bull', 'high_vol'},
+        'trend_bear': {'trend_bear', 'high_vol'},
+        'sideways':   {'sideways', 'low_vol'},
+        'high_vol':   {'high_vol', 'trend_bull', 'trend_bear'},
+        'low_vol':    {'low_vol', 'sideways'},
+    }
+    if match_regime in compatible.get(tpl_regime, set()):
+        return 1.05   # %5 bonus
+    return 0.85       # %15 ceza
+
+
+def segment_similarity_map(tpl_z: np.ndarray, win_z: np.ndarray,
+                            segments: int = 8) -> np.ndarray:
+    """
+    OPT-4: Segment bazlı benzerlik haritası.
+    Şablon ve pencereyi `segments` parçaya böler.
+    Her segment için Pearson benzerliği hesaplar.
+    Grafik görselleştirmesi için 0-100 arası segment skorları döndürür.
+    """
+    n = len(tpl_z)
+    seg_size = max(1, n // segments)
+    scores = np.zeros(segments)
+    for i in range(segments):
+        s = i * seg_size
+        e = n if i == segments - 1 else (i + 1) * seg_size
+        t_seg = tpl_z[s:e]
+        w_seg = win_z[s:e]
+        if len(t_seg) >= 2 and len(w_seg) >= 2:
+            scores[i] = (pearson_sim(t_seg, w_seg)) * 100
+    return scores
+
+
+def multi_timeframe_check(tpl_prices: np.ndarray, win_prices: np.ndarray) -> float:
+    """
+    OPT-5: Çoklu zaman dilimi kontrolü.
+    Haftalık (5 gün ortalaması) ve aylık (20 gün ortalaması) agregasyonlar üzerinde
+    ek benzerlik skoru hesaplar.
+    Günlük gürültüden arındırılmış yapısal benzerliği ölçer.
+    """
+    def aggregate(arr, window):
+        arr = np.array(arr, dtype=float)
+        if len(arr) < window:
+            return arr
+        return np.array([arr[i:i+window].mean()
+                         for i in range(0, len(arr)-window+1, window//2)])
+
+    scores = []
+    for w in [5, 10]:   # Haftalık ve iki haftalık
+        t_agg = aggregate(tpl_prices, w)
+        win_agg = aggregate(win_prices, w)
+        if len(t_agg) >= 3 and len(win_agg) >= 3:
+            min_len = min(len(t_agg), len(win_agg))
+            t_z = zscore(t_agg[-min_len:])
+            w_z = zscore(win_agg[-min_len:])
+            scores.append(pearson_sim(t_z, w_z) * 100)
+
+    return float(np.mean(scores)) if scores else 50.0
+
+
 def find_patterns(template_prices, template_volumes, all_data,
                   top_n=5, min_sim=65, future_mult=1.5):
     """
-    Çok boyutlu pattern matching.
-    Template özelliklerini hesapla, tüm hisselerde sliding window ile ara.
+    BIST-PSI Pattern Matching — 5 Optimizasyon ile:
+
+    OPT-1: Hiyerarşik 3-geçişli tarama (daha az atlama, daha hızlı)
+    OPT-2: Piecewise z-score normalizasyon (lokal trend benzerliği)
+    OPT-3: Rejim bazlı koşullu ağırlıklandırma (aynı rejim → bonus)
+    OPT-4: Segment benzerlik haritası (grafik için 8 segmentli analiz)
+    OPT-5: Çoklu zaman dilimi kontrolü (günlük + haftalık + iki haftalık)
     """
     tpl_prices = np.array(template_prices, dtype=float)
     tpl_volumes = np.array(template_volumes, dtype=float)
     n = len(tpl_prices)
     fut_win = min(int(n * future_mult), 90)
 
-    # Template özelliklerini hesapla
+    # Template özellikleri
     feat_tpl = extract_features(tpl_prices, tpl_volumes)
+    tpl_z   = feat_tpl['price_z']
+    tpl_pz  = piecewise_zscore(tpl_prices)          # OPT-2
+
+    # Şablon rejimi (OPT-3 için)
+    try:
+        from bist_psi import detect_regime as _dr
+        tpl_regime = _dr(tpl_prices, tpl_volumes).name
+    except Exception:
+        tpl_regime = 'sideways'
 
     results = []
 
     for ticker, df in all_data.items():
-        closes = df['Close'].values.astype(float)
+        closes  = df['Close'].values.astype(float)
         volumes = df['Volume'].values.astype(float)
-        dates = df.index
+        dates   = df.index
 
         if len(closes) < n + fut_win + 10:
             continue
 
         max_i = len(closes) - n - fut_win
-        step = max(1, n // 5)
 
-        # Kaba tarama — sadece fiyat DTW kullan (hızlı)
-        best_score, best_i = -1, 0
-        for i in range(0, max_i, step):
-            w_prices = closes[i:i+n]
-            w_z = zscore(w_prices)
-            quick_s = dtw_similarity(feat_tpl['price_z'], w_z) * 100
-            if quick_s > best_score:
-                best_score, best_i = quick_s, i
-
-        # İnce tarama — en iyi bölge etrafında tam kompozit skor
-        refine_range = range(max(0, best_i - step), min(max_i+1, best_i + step + 1))
-        best_full_score, best_breakdown = -1, {}
-        best_i_final = best_i
-
-        for i in refine_range:
-            w_prices = closes[i:i+n]
-            w_volumes = volumes[i:i+n]
-            feat_win = extract_features(w_prices, w_volumes)
-            full_s, breakdown = composite_score(feat_tpl, feat_win)
-            if full_s > best_full_score:
-                best_full_score = full_s
-                best_breakdown = breakdown
-                best_i_final = i
-
-        if best_full_score < min_sim:
+        # OPT-1: Hiyerarşik tarama
+        best_i, quick_score = hierarchical_search(tpl_z, tpl_pz, closes, n, max_i)
+        if quick_score < min_sim * 0.75:
             continue
 
-        ms, me = best_i_final, best_i_final + n
-        match_closes = closes[ms:me]
-        match_volumes = volumes[ms:me]
-        match_dates = dates[ms:me]
-        future_closes = closes[me:me+fut_win]
-        future_dates = dates[me:me+fut_win]
+        # Tam kompozit skor
+        w_prices  = closes[best_i:best_i+n]
+        w_volumes = volumes[best_i:best_i+n]
+        feat_win  = extract_features(w_prices, w_volumes)
+        full_s, breakdown = composite_score(feat_tpl, feat_win)
 
-        fut_pct = 0.0
-        fut_max = 0.0
-        fut_min = 0.0
+        # OPT-5: Çoklu zaman dilimi bonusu
+        mtf_score = multi_timeframe_check(tpl_prices, w_prices)
+        full_s = full_s * 0.88 + mtf_score * 0.12
+
+        # OPT-3: Rejim ağırlığı
+        try:
+            from bist_psi import detect_regime as _dr
+            win_regime = _dr(w_prices, w_volumes).name
+        except Exception:
+            win_regime = 'sideways'
+        reg_w = regime_weight(tpl_regime, win_regime)
+        full_s = min(100.0, full_s * reg_w)
+
+        breakdown['mtf_score'] = round(mtf_score, 1)
+        breakdown['regime_match'] = win_regime == tpl_regime
+
+        if full_s < min_sim:
+            continue
+
+        ms, me = best_i, best_i + n
+        match_closes  = closes[ms:me]
+        match_volumes = volumes[ms:me]
+        match_dates   = dates[ms:me]
+        future_closes = closes[me:me+fut_win]
+        future_dates  = dates[me:me+fut_win]
+
+        fut_pct = fut_max = fut_min = 0.0
         if len(future_closes) > 1:
             fut_pct = (future_closes[-1] - future_closes[0]) / future_closes[0] * 100
             fut_max = (future_closes.max() - future_closes[0]) / future_closes[0] * 100
             fut_min = (future_closes.min() - future_closes[0]) / future_closes[0] * 100
 
+        # OPT-4: Segment benzerlik haritası
+        win_z = zscore(match_closes)
+        seg_map = segment_similarity_map(tpl_z, win_z, segments=8)
+
         results.append({
-            'ticker': ticker,
-            'similarity': best_full_score,
-            'breakdown': best_breakdown,
+            'ticker':       ticker,
+            'similarity':   round(full_s, 1),
+            'breakdown':    breakdown,
+            'seg_map':      seg_map,          # OPT-4
+            'regime_match': win_regime == tpl_regime,  # OPT-3
+            'mtf_score':    round(mtf_score, 1),       # OPT-5
             'ms': ms, 'me': me,
-            'match_closes': match_closes,
+            'match_closes':  match_closes,
             'match_volumes': match_volumes,
-            'match_dates': match_dates,
+            'match_dates':   match_dates,
             'future_closes': future_closes,
-            'future_dates': future_dates,
-            'fut_pct': round(fut_pct, 2),
-            'fut_max': round(fut_max, 2),
-            'fut_min': round(fut_min, 2),
-            'fut_win': fut_win,
+            'future_dates':  future_dates,
+            'fut_pct':  round(fut_pct, 2),
+            'fut_max':  round(fut_max, 2),
+            'fut_min':  round(fut_min, 2),
+            'fut_win':  fut_win,
             'all_closes': closes,
-            'all_dates': dates,
+            'all_dates':  dates,
             'start_date': pd.Timestamp(match_dates[0]).strftime('%d.%m.%Y'),
-            'end_date': pd.Timestamp(match_dates[-1]).strftime('%d.%m.%Y'),
+            'end_date':   pd.Timestamp(match_dates[-1]).strftime('%d.%m.%Y'),
         })
 
     results.sort(key=lambda x: x['similarity'], reverse=True)
@@ -834,6 +1006,33 @@ def fig_normalize(template_prices, results, symbol):
     layout = base_layout(380, 'Normalize Karşılaştırma — Eşleşen Bölgeler + Sonraki Hareketler')
     layout['xaxis']['title'] = 'Gün'
     layout['yaxis']['title'] = 'Z-Score'
+    fig.update_layout(**layout)
+    return fig
+
+
+def fig_segment_map(seg_map: np.ndarray, ticker: str, symbol: str):
+    """OPT-4: Segment bazlı benzerlik haritası grafiği."""
+    import plotly.graph_objects as go
+    n = len(seg_map)
+    labels = [f"Seg {i+1}" for i in range(n)]
+    colors = ['#0E9F6E' if s >= 70 else '#E3A008' if s >= 50 else '#E02424'
+              for s in seg_map]
+    fig = go.Figure(go.Bar(
+        x=labels, y=seg_map,
+        marker_color=colors,
+        text=[f"%{s:.0f}" for s in seg_map],
+        textposition='outside',
+        hovertemplate='%{x}: %{y:.1f}%<extra></extra>'
+    ))
+    fig.add_hline(y=70, line_dash='dash', line_color='rgba(14,159,110,0.5)',
+                  annotation_text='İyi Eşleşme (70)', annotation_font_size=10)
+    fig.add_hline(y=50, line_dash='dot', line_color='rgba(227,160,8,0.5)',
+                  annotation_text='Orta (50)', annotation_font_size=10)
+    layout = base_layout(240,
+        f'Segment Benzerlik Haritası — {symbol} vs {ticker}')
+    layout['yaxis']['range'] = [0, 110]
+    layout['yaxis']['title'] = 'Benzerlik %'
+    layout['showlegend'] = False
     fig.update_layout(**layout)
     return fig
 
@@ -1265,7 +1464,9 @@ def main():
                     📐 Fiyat: %{bd.get('fiyat_dtw',0):.0f} &nbsp;
                     📊 Getiri: %{bd.get('getiri',0):.0f}<br>
                     📦 Hacim: %{bd.get('hacim',0):.0f} &nbsp;
-                    ⚡ Mom: %{bd.get('momentum',0):.0f}
+                    ⚡ Mom: %{bd.get('momentum',0):.0f}<br>
+                    🕐 MTF: %{r.get('mtf_score',50):.0f} &nbsp;
+                    {"✅ Rejim Eşleşti" if r.get('regime_match') else "⚠️ Farklı Rejim"}
                 </div>
                 <div style='margin:8px 0'>
                     <div style='font-size:10px;color:#888'>SONRASI</div>
@@ -1306,6 +1507,14 @@ def main():
             with tab2:
                 st.plotly_chart(fig_compare(sel, template_closes, sym), use_container_width=True)
                 st.caption("Z-score normalize fiyat karşılaştırması. Şekil ne kadar örtüşüyor?")
+                # Segment haritası
+                if 'seg_map' in sel and sel['seg_map'] is not None:
+                    st.plotly_chart(fig_segment_map(sel['seg_map'], sel['ticker'], sym),
+                                    use_container_width=True)
+                    avg_seg = float(np.mean(sel['seg_map']))
+                    weak = sum(1 for s in sel['seg_map'] if s < 50)
+                    st.caption(f"Ort. segment benzerliği: **%{avg_seg:.0f}** — "
+                               f"{weak} zayıf segment ({'var, dikkatli ol' if weak > 2 else 'az, iyi eşleşme'})")
 
             with tab3:
                 st.plotly_chart(fig_normalize(template_closes, matches, sym), use_container_width=True)
