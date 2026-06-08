@@ -1,4 +1,6 @@
 import streamlit as st
+from formations import scan_all_formations, formation_summary_score
+from bist_psi import BISTPSI, detect_regime
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -188,95 +190,20 @@ def calc_volume_profile(volumes, prices, n_bins=5):
     return profile / total if total > 0 else profile
 
 def detect_formations(prices, volumes):
-    """
-    Formasyon skoru hesapla:
-    - Double Top/Bottom
-    - Head & Shoulders
-    - Trend kanalı (ascending/descending)
-    - Breakout (hacim artışıyla fiyat kırılması)
-    Sonuç: dict of formation scores (0-1)
-    """
+    """Geriye dönük uyumluluk için basit skor dict döndür."""
     prices = np.array(prices, dtype=float)
     volumes = np.array(volumes, dtype=float)
-    n = len(prices)
-    scores = {
-        'double_top': 0.0,
-        'double_bottom': 0.0,
-        'head_shoulders': 0.0,
-        'ascending_channel': 0.0,
-        'descending_channel': 0.0,
-        'breakout_up': 0.0,
-        'breakout_down': 0.0,
+    formations = scan_all_formations(prices, volumes, min_confidence=40)
+    summary = formation_summary_score(formations)
+    return {
+        'double_top': max((f.confidence/100 for f in formations if 'Double Top' in f.name), default=0.0),
+        'double_bottom': max((f.confidence/100 for f in formations if 'Double Bottom' in f.name), default=0.0),
+        'head_shoulders': max((f.confidence/100 for f in formations if 'Head' in f.name), default=0.0),
+        'ascending_channel': max((f.confidence/100 for f in formations if 'Ascending' in f.name), default=0.0),
+        'descending_channel': max((f.confidence/100 for f in formations if 'Descending' in f.name), default=0.0),
+        'breakout_up': max((f.confidence/100 for f in formations if 'bullish' == f.direction and f.confidence > 60), default=0.0),
+        'breakout_down': max((f.confidence/100 for f in formations if 'bearish' == f.direction and f.confidence > 60), default=0.0),
     }
-    if n < 10:
-        return scores
-
-    # Yerel tepe ve dipler bul
-    def local_extrema(arr, order=3):
-        peaks, troughs = [], []
-        for i in range(order, len(arr)-order):
-            window = arr[i-order:i+order+1]
-            if arr[i] == window.max() and arr[i] > arr[i-1] and arr[i] > arr[i+1]:
-                peaks.append(i)
-            if arr[i] == window.min() and arr[i] < arr[i-1] and arr[i] < arr[i+1]:
-                troughs.append(i)
-        return peaks, troughs
-
-    peaks, troughs = local_extrema(prices, order=max(2, n//8))
-
-    # Double Top: 2 tepe yakın seviyede
-    if len(peaks) >= 2:
-        for i in range(len(peaks)-1):
-            p1, p2 = prices[peaks[i]], prices[peaks[i+1]]
-            diff = abs(p1-p2) / (max(p1,p2)+1e-9)
-            if diff < 0.03:  # %3 tolerans
-                scores['double_top'] = max(scores['double_top'], 1 - diff/0.03)
-
-    # Double Bottom: 2 dip yakın seviyede
-    if len(troughs) >= 2:
-        for i in range(len(troughs)-1):
-            t1, t2 = prices[troughs[i]], prices[troughs[i+1]]
-            diff = abs(t1-t2) / (max(t1,t2)+1e-9)
-            if diff < 0.03:
-                scores['double_bottom'] = max(scores['double_bottom'], 1 - diff/0.03)
-
-    # Head & Shoulders: 3 tepe, ortadaki yüksek
-    if len(peaks) >= 3:
-        for i in range(len(peaks)-2):
-            l, h, r = prices[peaks[i]], prices[peaks[i+1]], prices[peaks[i+2]]
-            if h > l and h > r:
-                sym = 1 - abs(l-r)/(h+1e-9)
-                height_ratio = min(l,r)/h
-                if height_ratio > 0.85 and sym > 0.7:
-                    scores['head_shoulders'] = max(scores['head_shoulders'], sym * height_ratio)
-
-    # Trend kanalı — linear regression
-    x = np.arange(n)
-    slope, intercept = np.polyfit(x, prices, 1)
-    residuals = prices - (slope * x + intercept)
-    r2 = 1 - residuals.var() / (prices.var() + 1e-9)
-
-    if r2 > 0.6:
-        norm_slope = slope / (prices.mean() + 1e-9)
-        if norm_slope > 0.001:
-            scores['ascending_channel'] = min(1.0, r2 * (norm_slope * 100))
-        elif norm_slope < -0.001:
-            scores['descending_channel'] = min(1.0, r2 * abs(norm_slope * 100))
-
-    # Breakout: son %20'de hacim spike + fiyat kırılması
-    split = int(n * 0.8)
-    if split > 0 and len(volumes) == n:
-        base_vol = volumes[:split].mean()
-        recent_vol = volumes[split:].mean()
-        base_price = prices[:split].max()
-        recent_price = prices[split:].max()
-        vol_ratio = recent_vol / (base_vol + 1e-9)
-        if vol_ratio > 1.5 and recent_price > base_price * 1.02:
-            scores['breakout_up'] = min(1.0, (vol_ratio - 1) * 0.5)
-        elif vol_ratio > 1.5 and prices[split:].min() < prices[:split].min() * 0.98:
-            scores['breakout_down'] = min(1.0, (vol_ratio - 1) * 0.5)
-
-    return scores
 
 def extract_features(prices, volumes):
     """
@@ -695,6 +622,96 @@ def base_layout(height=360, title=""):
                    tickfont=dict(size=10)),
     )
 
+
+def fig_formation_chart(df, symbol, formations):
+    """Formasyonları grafik üzerinde işaretle."""
+    import plotly.graph_objects as go
+    dates = [d.strftime('%Y-%m-%d') for d in df.index]
+    closes = df['Close'].values
+    volumes = df['Volume'].values
+
+    fig = go.Figure()
+
+    # Ana fiyat çizgisi
+    fig.add_trace(go.Scatter(
+        x=dates, y=closes, name=symbol,
+        line=dict(color='#1A56DB', width=2),
+        hovertemplate='%{x}: %{y:.2f} ₺<extra></extra>'
+    ))
+
+    # Formasyon renkleri
+    cat_colors = {
+        'klasik': '#E3A008',
+        'trend': '#0E9F6E',
+        'elliott': '#9061F9',
+        'harmonik': '#E02424',
+        'wyckoff': '#1A56DB',
+    }
+
+    dir_colors = {
+        'bullish': '#0E9F6E',
+        'bearish': '#E02424',
+        'neutral': '#888',
+    }
+
+    for i, f in enumerate(formations[:8]):  # Max 8 formasyon göster
+        c_color = cat_colors.get(f.category, '#888')
+        d_color = dir_colors.get(f.direction, '#888')
+
+        if not f.key_points:
+            continue
+
+        # Key point'leri grafik üzerinde işaretle
+        kp_valid = [(idx, price, label)
+                    for idx, price, label in f.key_points
+                    if 0 <= idx < len(dates)]
+
+        if len(kp_valid) >= 2:
+            kp_x = [dates[idx] for idx, _, _ in kp_valid]
+            kp_y = [price for _, price, _ in kp_valid]
+            kp_labels = [label for _, _, label in kp_valid]
+
+            # Formasyon çizgisi
+            fig.add_trace(go.Scatter(
+                x=kp_x, y=kp_y,
+                mode='lines+markers+text',
+                name=f"{f.name} (%{f.confidence:.0f})",
+                line=dict(color=c_color, width=1.5, dash='dot'),
+                marker=dict(size=8, color=c_color, symbol='circle'),
+                text=kp_labels,
+                textposition='top center',
+                textfont=dict(size=9, color=c_color),
+                hovertemplate=f"{f.name}: %{{y:.2f}}<extra></extra>",
+                showlegend=True
+            ))
+
+        # Hedef çizgisi
+        if f.target and kp_valid:
+            last_idx = kp_valid[-1][0]
+            if last_idx < len(dates) - 1:
+                future_idx = min(last_idx + len(dates)//5, len(dates)-1)
+                fig.add_trace(go.Scatter(
+                    x=[dates[last_idx], dates[future_idx]],
+                    y=[f.target, f.target],
+                    mode='lines',
+                    name=f"Hedef: {f.target:.2f}",
+                    line=dict(color=d_color, width=1, dash='dash'),
+                    showlegend=False,
+                    hovertemplate=f"Hedef: {f.target:.2f}<extra></extra>"
+                ))
+
+    layout = base_layout(420, f'<b>{symbol}</b> — Formasyon Analizi')
+    layout['xaxis'] = dict(type='date', tickformat='%b %Y', tickangle=-30,
+                           gridcolor='rgba(0,0,0,0.05)', tickfont=dict(size=10))
+    layout['yaxis'] = dict(gridcolor='rgba(0,0,0,0.05)', ticksuffix=' ₺',
+                           tickfont=dict(size=10))
+    layout['legend'] = dict(orientation='v', x=1.01, y=1, font=dict(size=9),
+                            bgcolor='rgba(255,255,255,0.9)',
+                            bordercolor='#E5E9F0', borderwidth=1)
+    layout['margin'] = dict(l=10, r=180, t=45, b=10)
+    fig.update_layout(**layout)
+    return fig
+
 def fig_main_chart(df, symbol, sel_start=None, sel_end=None):
     dates = [d.strftime('%Y-%m-%d') for d in df.index]
     closes = df['Close'].values
@@ -976,13 +993,77 @@ def main():
     top_fmt = max(fmts, key=fmts.get)
     top_fmt_score = fmts[top_fmt]
 
+    # Piyasa rejimi tespiti
+    with st.spinner("Piyasa rejimi analiz ediliyor..."):
+        regime = detect_regime(seg_closes, seg_vols)
+    reg_icons = {
+        'trend_bull':'📈','trend_bear':'📉',
+        'sideways':'↔️','high_vol':'⚡','low_vol':'😴'
+    }
+    reg_icon = reg_icons.get(regime.name, '📊')
+    st.markdown(f"""
+    <div style='background:#F0F7FF;border:1px solid #BFDBFE;border-radius:8px;
+                padding:10px 16px;margin-bottom:12px;display:flex;gap:20px;flex-wrap:wrap'>
+        <span style='font-size:12px;color:#1A56DB;font-weight:600'>
+            {reg_icon} PİYASA REJİMİ: {regime.describe()}
+        </span>
+        <span style='font-size:11px;color:#555'>ADX: {regime.adx}</span>
+        <span style='font-size:11px;color:#555'>ATR: %{regime.atr_pct}</span>
+        <span style='font-size:11px;color:#555'>BB Genişlik: %{regime.bb_width}</span>
+        <span style='font-size:11px;color:#888;font-style:italic'>
+            BIST-PSI bu rejim için ağırlıkları otomatik ayarlıyor
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
+
     m1,m2,m3,m4,m5,m6 = st.columns(6)
     m1.metric("Uzunluk", f"{len(seg_df)} gün")
     m2.metric("Değişim", f"{pct:+.1f}%")
     m3.metric("Ort. Günlük", f"{seg_rets.mean()*100:+.2f}%")
     m4.metric("RSI", f"{rsi_last:.0f}")
     m5.metric("MACD", f"{'↑' if macd_hist[-1]>0 else '↓'} {macd_hist[-1]:.3f}")
-    m6.metric("Formasyon", f"{top_fmt.replace('_',' ').title()}" if top_fmt_score > 0.3 else "—")
+
+    # Formasyon analizi
+    with st.spinner("Formasyonlar taranıyor..."):
+        seg_formations = scan_all_formations(seg_closes, seg_vols, min_confidence=40)
+    fmt_summary = formation_summary_score(seg_formations)
+    dom = fmt_summary['dominant_signal']
+    dom_icon = '📈' if dom=='bullish' else ('📉' if dom=='bearish' else '↔️')
+    m6.metric("Formasyon Sinyali", f"{dom_icon} {dom.title()}")
+
+    if seg_formations:
+        with st.expander(f"🔍 {len(seg_formations)} Formasyon Tespit Edildi — Detay"):
+            # Grafik
+            st.plotly_chart(fig_formation_chart(
+                df.loc[sel_start_ts:sel_end_ts], sym, seg_formations),
+                use_container_width=True)
+
+            # Formasyon listesi
+            cat_icons = {'klasik':'📊','trend':'📐','elliott':'🌊','harmonik':'🎯','wyckoff':'🏗️'}
+            dir_colors_html = {'bullish':'#0E9F6E','bearish':'#E02424','neutral':'#888'}
+            for f in seg_formations:
+                icon = cat_icons.get(f.category, '📌')
+                dc = dir_colors_html.get(f.direction, '#888')
+                status_badge = {'active':'🟢 Aktif','completed':'⚪ Tamamlandı','forming':'🟡 Oluşuyor'}.get(f.status,'')
+                st.markdown(f"""
+                <div style='background:#FAFAFA;border:1px solid #E5E9F0;border-radius:8px;
+                            padding:10px 14px;margin:6px 0'>
+                    <div style='display:flex;align-items:center;gap:10px;flex-wrap:wrap'>
+                        <span style='font-size:16px'>{icon}</span>
+                        <span style='font-weight:600;font-size:14px'>{f.name}</span>
+                        <span style='background:{dc}22;color:{dc};padding:2px 8px;
+                                     border-radius:4px;font-size:11px'>{f.direction.upper()}</span>
+                        <span style='font-size:11px;color:#888'>{status_badge}</span>
+                        <span style='margin-left:auto;font-size:13px;font-weight:600;
+                                     color:#1A56DB'>%{f.confidence:.0f} güven</span>
+                    </div>
+                    <div style='font-size:12px;color:#555;margin-top:6px'>{f.description}</div>
+                    <div style='display:flex;gap:16px;margin-top:4px;font-size:11px;color:#888'>
+                        {'<span>🎯 Hedef: <b>' + str(f.target) + ' ₺</b></span>' if f.target else ''}
+                        {'<span>🛡️ Stop: <b>' + str(f.stop) + ' ₺</b></span>' if f.stop else ''}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
     st.divider()
 
@@ -1025,6 +1106,20 @@ def main():
         prog.progress(100, text="✅ Tamamlandı!")
         import time; time.sleep(0.3); prog.empty()
 
+        # BIST-PSI detaylarını da kaydet
+        psi_engine = BISTPSI()
+        psi_details = {}
+        for r in matches:
+            try:
+                n = min(len(seg_closes), len(r['match_closes']))
+                _, psi_result = psi_engine.compute(
+                    seg_closes[-n:], seg_vols[-n:],
+                    r['match_closes'][-n:], r['match_volumes'][-n:]
+                )
+                psi_details[r['ticker']] = psi_result
+            except Exception:
+                pass
+        st.session_state['psi_details'] = psi_details
         st.session_state.update({"matches": matches,
                                   "template_closes": seg_closes,
                                   "template_volumes": seg_vols,
@@ -1125,6 +1220,13 @@ def main():
         with card_cols[i]:
             bg = '#EFF6FF' if is_sel else '#FFFFFF'
             border = f'2px solid {c}' if is_sel else '1.5px solid #E5E9F0'
+            psi_details = st.session_state.get('psi_details', {})
+            psi = psi_details.get(r['ticker'])
+            psi_line = ""
+            if psi:
+                reg_short = {'trend_bull':'↗ Trend','trend_bear':'↘ Trend',
+                             'sideways':'↔ Yatay','high_vol':'⚡ Vol','low_vol':'😴 Dar'}.get(psi.regime.name,'')
+                psi_line = f"<div style='font-size:9px;color:#1A56DB;margin-top:3px'>BIST-PSI: {psi.score:.0f} | {reg_short} | Mah: {psi.mahalanobis_sim:.0f}</div>"
             st.markdown(f"""
             <div style='background:{bg};border:{border};border-radius:10px;
                         padding:14px 10px;text-align:center'>
@@ -1133,8 +1235,9 @@ def main():
                     {r['start_date']} → {r['end_date']}
                 </div>
                 <div style='margin:8px 0'>
-                    <div style='font-size:10px;color:#888'>GENEL BENZERLİK</div>
+                    <div style='font-size:10px;color:#888'>BIST-PSI SKORU</div>
                     <div style='font-size:26px;font-weight:700;color:{c}'>%{r['similarity']}</div>
+                    {psi_line}
                 </div>
                 <div style='font-size:10px;color:#888;text-align:left;padding:0 4px'>
                     📐 Fiyat: %{bd.get('fiyat_dtw',0):.0f} &nbsp;
@@ -1166,11 +1269,12 @@ def main():
             st.divider()
             st.markdown(f"### 🔎 {selected} — Detay Analiz")
 
-            tab1, tab2, tab3, tab4 = st.tabs([
+            tab1, tab2, tab3, tab4, tab5 = st.tabs([
                 "📅 Tarihsel Konum",
                 "🔍 Şablon Uyumu",
                 "📈 Tüm Eşleşmeler",
-                "🎯 Benzerlik Profili"
+                "🎯 Benzerlik Profili",
+                "🧮 BIST-PSI Detay"
             ])
 
             with tab1:
@@ -1205,6 +1309,81 @@ def main():
                     s1.metric("Sonraki", f"{sel['fut_pct']:+.1f}%")
                     s2.metric("Maks ↑", f"+{sel['fut_max']:.1f}%")
                     s3.metric("Maks ↓", f"{sel['fut_min']:.1f}%")
+            with tab5:
+                psi_details = st.session_state.get('psi_details', {})
+                psi = psi_details.get(selected)
+                if psi:
+                    st.markdown(f"#### 🧮 BIST-PSI v2 — {selected}")
+                    # Özet
+                    p1,p2,p3,p4 = st.columns(4)
+                    p1.metric("BIST-PSI Skoru", f"{psi.score:.1f}")
+                    p2.metric("Mahalanobis", f"{psi.mahalanobis_sim:.1f}")
+                    p3.metric("Ensemble Oy", f"%{psi.ensemble_detail['vote_ratio']}")
+                    p4.metric("Güven Bandı", f"{psi.confidence_band[0]:.0f}-{psi.confidence_band[1]:.0f}")
+
+                    # Rejim
+                    reg_icons2 = {'trend_bull':'📈','trend_bear':'📉','sideways':'↔️','high_vol':'⚡','low_vol':'😴'}
+                    st.markdown(f"""
+                    <div style='background:#F0F7FF;border:1px solid #BFDBFE;border-radius:8px;padding:10px 16px;margin:10px 0'>
+                        <b>Piyasa Rejimi:</b> {reg_icons2.get(psi.regime.name,'')} {psi.regime.describe()} &nbsp;|&nbsp;
+                        ADX: {psi.regime.adx} &nbsp;|&nbsp; ATR: %{psi.regime.atr_pct} &nbsp;|&nbsp; BB: %{psi.regime.bb_width}
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    # Ağırlıklar ve boyut skorları
+                    st.markdown("##### Boyut Skorları ve Adaptif Ağırlıklar")
+                    dim_names = {'dtw':'Fiyat DTW','pearson':'Fiyat Pearson',
+                                 'returns':'Getiri Dağılımı','volume':'Hacim',
+                                 'momentum':'Momentum','formation':'Formasyon'}
+                    dim_icons = {'dtw':'📐','pearson':'📊','returns':'💹',
+                                 'volume':'📦','momentum':'⚡','formation':'🔷'}
+                    for dim, score in psi.dim_scores.items():
+                        w = psi.weights.get(dim, 0)
+                        label = dim_names.get(dim, dim)
+                        icon2 = dim_icons.get(dim, '•')
+                        bar = int(score / 5)
+                        w_bar = int(w / 5)
+                        color = '#0E9F6E' if score >= 70 else ('#E3A008' if score >= 55 else '#E02424')
+                        st.markdown(f"""
+                        <div style='background:#FAFAFA;border:1px solid #E5E9F0;border-radius:6px;
+                                    padding:8px 12px;margin:4px 0;display:flex;align-items:center;gap:12px'>
+                            <span style='width:20px'>{icon2}</span>
+                            <span style='width:140px;font-size:12px;font-weight:500'>{label}</span>
+                            <span style='color:{color};font-size:14px;font-weight:700;width:45px'>%{score:.0f}</span>
+                            <span style='font-family:monospace;font-size:11px;color:#888'>
+                                {'█'*bar}{'░'*(20-bar)}
+                            </span>
+                            <span style='font-size:10px;color:#1A56DB;margin-left:8px'>Ağırlık: %{w:.0f}</span>
+                            <span style='font-family:monospace;font-size:9px;color:#BFDBFE'>
+                                {'■'*w_bar}{'□'*(20-w_bar)}
+                            </span>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    # Ensemble oy detayı
+                    st.markdown("##### Ensemble Oylama")
+                    ev = psi.ensemble_detail
+                    st.markdown(f"""
+                    <div style='background:#FAFAFA;border:1px solid #E5E9F0;border-radius:8px;padding:12px 16px'>
+                        <b>Oy Sonucu:</b> {ev['yes_votes']}/{ev['total_votes']} boyut "Benzer" oyu kullandı
+                        (%{ev['vote_ratio']}) &nbsp;|&nbsp;
+                        <b>Consensus Bonus:</b> +%{ev['consensus_bonus']}
+                    </div>
+                    """, unsafe_allow_html=True)
+                    vote_rows = []
+                    for dim, v in ev['votes'].items():
+                        vote_rows.append({
+                            "Boyut": dim_names.get(dim, dim),
+                            "Skor": f"%{v['score']:.0f}",
+                            "Oy": "✅ Benzer" if v['vote'] else "❌ Farklı",
+                            "Ağırlık": f"%{v['weight']:.0f}",
+                            "Katkı": f"%{v['weighted_contribution']:.1f}"
+                        })
+                    st.dataframe(pd.DataFrame(vote_rows),
+                                 use_container_width=True, hide_index=True)
+                else:
+                    st.info("BIST-PSI detayı için yeniden tarama yapın.")
+
     else:
         st.divider()
         if matches and template_closes is not None:
