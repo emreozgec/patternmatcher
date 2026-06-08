@@ -1,155 +1,183 @@
 """
-scanner.py — BIST Fırsat Tarayıcı
+scanner.py — BIST Fırsat Tarayıcı v2
 
-Her hissenin son 20 ve 40 günlük hareketini şablon olarak alır.
-Geçmişteki benzer hareketlerde konsensüs YÜKSELİŞ olan hisseleri listeler.
-BIST-PSI v2 kullanır.
+Doğru mantık:
+1. Her hissenin son 20G ve 40G hareketini şablon al
+2. DİĞER hisselerin 2 yıllık geçmişinde bu şablona benzer dönemleri bul
+3. O benzer dönemlerden sonra ne olmuş → konsensüs hesapla
+4. Çoğunluk YÜKSELİŞ ise fırsat listesine ekle
 """
 
 import numpy as np
 import pandas as pd
-from typing import List, Dict, Tuple, Optional
-from bist_psi import BISTPSI, detect_regime
-from formations import scan_all_formations, formation_summary_score
+from typing import List, Dict, Optional
 import streamlit as st
 
-# ── Tarama parametreleri ───────────────────────────────────────────────────────
+# ── Yardımcı fonksiyonlar ──────────────────────────────────────────────────────
 
-SCAN_WINDOWS = {
-    'kisa': 20,   # Kısa vadeli şablon
-    'orta': 40,   # Orta vadeli şablon
-}
+def zscore(arr):
+    arr = np.array(arr, dtype=float)
+    mu, sigma = arr.mean(), arr.std()
+    if sigma < 1e-9:
+        return np.zeros_like(arr)
+    return (arr - mu) / sigma
 
-MIN_PSI_SCORE   = 65.0   # Minimum BIST-PSI benzerlik skoru
-MIN_CONFIDENCE  = 55.0   # Minimum konsensüs güven skoru
-FUTURE_MULT     = 1.5    # Gelecek penceresi = şablon * 1.5
-MIN_HIST_DATA   = 120    # Tarihsel karşılaştırma için minimum gün
+def pearson(a, b):
+    if len(a) != len(b) or len(a) < 3:
+        return 0.0
+    if np.std(a) < 1e-9 or np.std(b) < 1e-9:
+        return 0.0
+    return float(np.corrcoef(a, b)[0, 1])
 
+def dtw_fast(s1, s2, band=None):
+    n = len(s1)
+    if n == 0:
+        return 0.0
+    band = band or max(2, n // 6)
+    dtw = np.full((n+1, n+1), np.inf)
+    dtw[0, 0] = 0
+    for i in range(1, n+1):
+        j0 = max(1, i - band)
+        j1 = min(n, i + band) + 1
+        for j in range(j0, j1):
+            cost = abs(s1[i-1] - s2[j-1])
+            dtw[i,j] = cost + min(dtw[i-1,j], dtw[i,j-1], dtw[i-1,j-1])
+    dist = dtw[n,n] / n
+    return max(0.0, 1.0 - dist * 1.5)
 
-# ── Yardımcı: tek hisse için fırsat analizi ───────────────────────────────────
+def similarity_score(tpl_z, win_prices):
+    """Hızlı benzerlik: Pearson + DTW kombinasyonu"""
+    win_z = zscore(win_prices)
+    p = (pearson(tpl_z, win_z) + 1) / 2
+    if p < 0.45:
+        return p * 100
+    d = dtw_fast(tpl_z, win_z)
+    return (0.55 * p + 0.45 * d) * 100
 
-def analyze_opportunity(ticker: str,
-                        df: pd.DataFrame,
-                        window: int,
-                        psi_engine: BISTPSI,
-                        all_data: Dict[str, pd.DataFrame],
-                        min_psi: float = MIN_PSI_SCORE) -> Optional[Dict]:
+def daily_returns(prices):
+    prices = np.array(prices, dtype=float)
+    if len(prices) < 2:
+        return np.zeros(1)
+    return np.diff(prices) / (np.abs(prices[:-1]) + 1e-9)
+
+def calc_rsi(prices, n=14):
+    prices = np.array(prices, dtype=float)
+    if len(prices) < n + 1:
+        return 50.0
+    deltas = np.diff(prices)
+    gains = np.where(deltas > 0, deltas, 0.0)
+    losses = np.where(deltas < 0, -deltas, 0.0)
+    ag = gains[:n].mean()
+    al = losses[:n].mean()
+    for i in range(n, len(deltas)):
+        ag = (ag*(n-1) + gains[i]) / n
+        al = (al*(n-1) + losses[i]) / n
+    return float(100 - 100 / (1 + ag / (al + 1e-9)))
+
+def find_best_match(tpl_z, candidate_closes, window, fut_window):
     """
-    Tek bir hisse için fırsat analizi:
-    1. Son `window` günü şablon al
-    2. Tüm hisselerin geçmişinde benzer hareketleri bul
-    3. Konsensüs YÜKSELİŞ ise fırsat olarak kaydet
+    Aday hissenin geçmişinde şablona en benzer bölgeyi bul.
+    Sadece ardında yeterli gelecek verisi olan bölgeleri tara.
+    """
+    n = len(candidate_closes)
+    max_start = n - window - fut_window
+    if max_start < 5:
+        return None
+
+    step = max(1, window // 5)
+    best_sim, best_i = -1, 0
+
+    # Kaba tarama
+    for i in range(0, max_start, step):
+        sim = similarity_score(tpl_z, candidate_closes[i:i+window])
+        if sim > best_sim:
+            best_sim, best_i = sim, i
+
+    # İnce tarama etrafında
+    for i in range(max(0, best_i - step), min(max_start+1, best_i + step + 1)):
+        sim = similarity_score(tpl_z, candidate_closes[i:i+window])
+        if sim > best_sim:
+            best_sim, best_i = sim, i
+
+    if best_sim < 55:
+        return None
+
+    match_closes = candidate_closes[best_i:best_i+window]
+    future_closes = candidate_closes[best_i+window:best_i+window+fut_window]
+
+    if len(future_closes) < 3:
+        return None
+
+    fut_pct = (future_closes[-1] - future_closes[0]) / (future_closes[0] + 1e-9) * 100
+    fut_max = (future_closes.max() - future_closes[0]) / (future_closes[0] + 1e-9) * 100
+    fut_min = (future_closes.min() - future_closes[0]) / (future_closes[0] + 1e-9) * 100
+
+    return {
+        'sim': round(best_sim, 1),
+        'fut_pct': round(fut_pct, 2),
+        'fut_max': round(fut_max, 2),
+        'fut_min': round(fut_min, 2),
+        'match_closes': match_closes,
+        'future_closes': future_closes,
+    }
+
+
+def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60):
+    """
+    Tek hisse için fırsat analizi:
+    - Son `window` günü şablon al
+    - Diğer hisselerin geçmişinde benzer dönemleri bul
+    - Konsensüs hesapla
     """
     closes = df['Close'].values.astype(float)
     volumes = df['Volume'].values.astype(float)
-    n = len(closes)
 
-    if n < window + 10:
+    if len(closes) < window + 10:
         return None
 
-    # Şablon: son `window` gün
+    # Şablon
     tpl_prices = closes[-window:]
-    tpl_volumes = volumes[-window:]
+    tpl_z = zscore(tpl_prices)
+    tpl_rets = daily_returns(tpl_prices)
 
-    # Formasyon analizi
-    formations = scan_all_formations(tpl_prices, tpl_volumes, min_confidence=45)
-    fmt_summary = formation_summary_score(formations)
+    # Şablon istatistikleri
+    tpl_change = (tpl_prices[-1] - tpl_prices[0]) / (tpl_prices[0] + 1e-9) * 100
+    tpl_rsi = calc_rsi(tpl_prices)
+    current_price = float(closes[-1])
 
-    # Piyasa rejimi
-    regime = detect_regime(tpl_prices, tpl_volumes)
-
-    # Referans veri: diğer hisseler + bu hissenin geçmişi
-    candidates = {}
-    fut_window = min(int(window * FUTURE_MULT), 60)
-
-    # Bu hissenin kendi geçmişi
-    if n >= window + fut_window + 10:
-        max_start = n - window - fut_window
-        step = max(1, window // 5)
-        best_sim, best_start = -1, 0
-
-        for i in range(0, max_start, step):
-            w_prices = closes[i:i+window]
-            from bist_psi import zscore, dtw_sim
-            tpl_z = zscore(tpl_prices)
-            win_z = zscore(w_prices)
-            sim = dtw_sim(tpl_z, win_z) * 100
-            if sim > best_sim:
-                best_sim, best_start = sim, i
-
-        if best_sim >= min_psi:
-            candidates[f"{ticker}_self"] = (
-                closes[best_start:best_start+window],
-                volumes[best_start:best_start+window],
-                closes[best_start+window:best_start+window+fut_window],
-            )
-
-    # Diğer hisseler
+    # Diğer hisselerde benzer dönem ara
+    matches = []
     for other_ticker, other_df in all_data.items():
         if other_ticker == ticker:
             continue
         other_closes = other_df['Close'].values.astype(float)
-        other_vols = other_df['Volume'].values.astype(float)
-        if len(other_closes) < window + fut_window + 10:
-            continue
+        result = find_best_match(tpl_z, other_closes, window, fut_window)
+        if result and result['sim'] >= min_sim:
+            result['source'] = other_ticker
+            matches.append(result)
 
-        # Hızlı DTW tarama
-        from bist_psi import zscore, dtw_sim
-        tpl_z = zscore(tpl_prices)
-        max_start = len(other_closes) - window - fut_window
-        step = max(1, window // 5)
-        best_sim, best_start = -1, 0
+    # Bu hissenin kendi geçmişinde de ara (son window gün hariç)
+    if len(closes) >= window * 3 + fut_window:
+        hist_closes = closes[:-window]  # Son window günü hariç tut
+        result = find_best_match(tpl_z, hist_closes, window, fut_window)
+        if result and result['sim'] >= min_sim:
+            result['source'] = f"{ticker} (geçmiş)"
+            matches.append(result)
 
-        for i in range(0, max_start, step):
-            w_z = zscore(other_closes[i:i+window])
-            sim = dtw_sim(tpl_z, w_z) * 100
-            if sim > best_sim:
-                best_sim, best_start = sim, i
-
-        if best_sim >= min_psi * 0.85:  # Kaba eşik
-            candidates[other_ticker] = (
-                other_closes[best_start:best_start+window],
-                other_vols[best_start:best_start+window],
-                other_closes[best_start+window:best_start+window+fut_window],
-            )
-
-    if not candidates:
+    if len(matches) < 2:
         return None
 
-    # BIST-PSI ile tam skor hesapla ve konsensüs al
-    match_results = []
-    for cand_key, (cand_prices, cand_vols, future) in candidates.items():
-        try:
-            score, psi_result = psi_engine.compute(
-                tpl_prices, tpl_volumes, cand_prices, cand_vols
-            )
-            if score >= min_psi and len(future) > 1:
-                fut_pct = (future[-1] - future[0]) / (future[0] + 1e-9) * 100
-                fut_max = (future.max() - future[0]) / (future[0] + 1e-9) * 100
-                match_results.append({
-                    'ticker': cand_key,
-                    'psi_score': score,
-                    'fut_pct': fut_pct,
-                    'fut_max': fut_max,
-                    'regime': psi_result.regime.name,
-                    'mahalanobis': psi_result.mahalanobis_sim,
-                    'ensemble_ratio': psi_result.ensemble_detail['vote_ratio'],
-                })
-        except Exception:
-            pass
-
-    if len(match_results) < 2:
-        return None
-
-    # Konsensüs hesapla
-    weights = np.array([r['psi_score'] for r in match_results], dtype=float)
-    weights = weights / weights.sum()
-    pcts = np.array([r['fut_pct'] for r in match_results])
+    # Ağırlıklı konsensüs
+    sims = np.array([m['sim'] for m in matches], dtype=float)
+    weights = sims / sims.sum()
+    pcts = np.array([m['fut_pct'] for m in matches])
+    maxes = np.array([m['fut_max'] for m in matches])
 
     weighted_pct = float(np.dot(weights, pcts))
-    up_weight = sum(w for w, p in zip(weights, pcts) if p > 0)
-    up_count = sum(1 for p in pcts if p > 0)
-    total = len(pcts)
+    weighted_max = float(np.dot(weights, maxes))
+    up_weight = float(sum(w for w, p in zip(weights, pcts) if p > 0))
+    up_count = int(sum(1 for p in pcts if p > 0))
+    dispersion = float(np.std(pcts))
 
     # Sadece bullish konsensüs
     if up_weight < 0.55:
@@ -157,326 +185,279 @@ def analyze_opportunity(ticker: str,
 
     # Güven skoru
     direction_conf = up_weight * 100
-    dispersion = float(np.std(pcts))
-    dispersion_penalty = min(35, dispersion * 1.5)
-    avg_psi = float(np.dot(weights, [r['psi_score'] for r in match_results]))
-    sim_bonus = max(0, (avg_psi - 65) / 35 * 15)
-    confidence = max(0, min(100, direction_conf - dispersion_penalty + sim_bonus))
+    disp_penalty = min(30, dispersion * 1.2)
+    avg_sim = float(np.dot(weights, sims))
+    sim_bonus = max(0, (avg_sim - 60) / 40 * 15)
+    # Eşleşme sayısı bonusu
+    match_bonus = min(10, (len(matches) - 2) * 2)
+    confidence = max(0, min(100,
+        direction_conf - disp_penalty + sim_bonus + match_bonus))
 
-    if confidence < MIN_CONFIDENCE:
+    if confidence < 45:
         return None
 
-    # Hedef fiyat
-    current_price = float(closes[-1])
-    maxs = np.array([r['fut_max'] for r in match_results])
-    weighted_max = float(np.dot(weights, maxs))
     target = current_price * (1 + weighted_max / 100)
 
-    # Top formasyon
-    top_formations = [f.name for f in formations[:2]] if formations else []
+    # Formasyon tespiti (basit)
+    formations = []
+    try:
+        from formations import scan_all_formations
+        fmts = scan_all_formations(tpl_prices, volumes[-window:], min_confidence=50)
+        formations = [f.name for f in fmts[:2]]
+    except Exception:
+        pass
+
+    # Rejim
+    regime_label = "—"
+    try:
+        from bist_psi import detect_regime
+        reg = detect_regime(tpl_prices, volumes[-window:])
+        regime_label = reg.describe()
+    except Exception:
+        pass
 
     return {
         'ticker': ticker,
         'window': window,
-        'window_label': f"{window}G",
         'current_price': round(current_price, 2),
+        'tpl_change': round(tpl_change, 2),
+        'tpl_rsi': round(tpl_rsi, 1),
         'weighted_pct': round(weighted_pct, 2),
         'target': round(target, 2),
+        'weighted_max': round(weighted_max, 2),
         'confidence': round(confidence, 1),
-        'avg_psi': round(avg_psi, 1),
+        'avg_sim': round(avg_sim, 1),
         'up_count': up_count,
-        'total_matches': total,
+        'total_matches': len(matches),
         'dispersion': round(dispersion, 2),
-        'regime': regime.name,
-        'regime_label': regime.describe(),
-        'formations': top_formations,
-        'fmt_signal': fmt_summary['dominant_signal'],
-        'match_results': match_results[:3],
+        'regime': regime_label,
+        'formations': formations,
+        'top_matches': sorted(matches, key=lambda x: x['sim'], reverse=True)[:3],
     }
 
 
-# ── Ana tarama fonksiyonu ─────────────────────────────────────────────────────
+# ── Streamlit UI ───────────────────────────────────────────────────────────────
 
-def run_opportunity_scan(
-    all_data: Dict[str, pd.DataFrame],
-    windows: List[int] = None,
-    min_psi: float = MIN_PSI_SCORE,
-    min_confidence: float = MIN_CONFIDENCE,
-    progress_callback=None,
-) -> Dict[str, List[Dict]]:
-    """
-    Tüm hisseleri 20 ve 40 günlük şablon ile tara.
-    Bullish fırsatları döndür.
-
-    Returns:
-        {'kisa': [...], 'orta': [...]}
-    """
-    if windows is None:
-        windows = [20, 40]
-
-    psi_engine = BISTPSI()
-
-    # Kovaryans matrisini tüm hisselerden güncelle
-    feat_vectors = []
-    from bist_psi import extract_features, build_feature_vector
-    for ticker, df in list(all_data.items())[:100]:
-        try:
-            closes = df['Close'].values.astype(float)[-40:]
-            vols = df['Volume'].values.astype(float)[-40:]
-            feat = extract_features(closes, vols)
-            feat_vectors.append(build_feature_vector(feat))
-        except Exception:
-            pass
-    if len(feat_vectors) >= 5:
-        psi_engine.update_covariance(feat_vectors)
-
-    results = {w: [] for w in windows}
-    total = len(all_data)
-
-    for idx, (ticker, df) in enumerate(all_data.items()):
-        if progress_callback:
-            progress_callback(idx, total, ticker)
-
-        for window in windows:
-            try:
-                opp = analyze_opportunity(
-                    ticker, df, window, psi_engine,
-                    all_data, min_psi
-                )
-                if opp and opp['confidence'] >= min_confidence:
-                    results[window].append(opp)
-            except Exception:
-                pass
-
-    # Güven skoruna göre sırala
-    for window in windows:
-        results[window].sort(
-            key=lambda x: (x['confidence'] * 0.5 + x['avg_psi'] * 0.5),
-            reverse=True
-        )
-
-    return results
-
-
-# ── Streamlit UI ──────────────────────────────────────────────────────────────
-
-def render_scanner(all_data_getter, bist_list):
-    """
-    Fırsat Tarayıcı sayfası.
-    all_data_getter: fn(tickers) -> {ticker: df}
-    """
+def render_scanner(all_data_getter, bist_lists):
     st.markdown("## 🔭 BIST Fırsat Tarayıcı")
     st.caption(
-        "Tüm BIST hisselerini BIST-PSI v2 ile tarar. "
-        "Geçmişteki benzer hareketlerde konsensüs yükseliş olan hisseleri listeler."
+        "Her hissenin son hareketini şablon alır, diğer hisselerin geçmişinde "
+        "benzer dönemleri bulur ve konsensüs yükseliş olan hisseleri listeler."
     )
     st.divider()
 
-    # Ayarlar
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        scope = st.selectbox("Kapsam", ["BIST 30", "BIST 100", "Tüm BIST"],
-                             index=2)
+        scope = st.selectbox("Kapsam", ["BIST 30", "BIST 100", "Tüm BIST"], index=1)
     with c2:
-        min_psi = st.slider("Min BIST-PSI", 55, 85, 65, 1)
+        min_sim = st.slider("Min Benzerlik", 55, 80, 60, 1)
     with c3:
-        min_conf = st.slider("Min Güven %", 45, 80, 55, 1)
+        min_conf = st.slider("Min Güven %", 40, 75, 48, 1)
     with c4:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         scan_btn = st.button("🔭 Tara", type="primary", use_container_width=True)
 
     st.markdown("""
     <div style='background:#FFF7ED;border:1px solid #FED7AA;border-radius:8px;
-                padding:10px 14px;margin-bottom:12px;font-size:12px;color:#92400E'>
-        ⚠️ <b>Tüm BIST taraması</b> ~500 hisse için 3-8 dakika sürebilir.
-        BIST 100 ile başlamanızı öneririz.
-        Bu araç yatırım tavsiyesi değildir — kendi analizinizle destekleyin.
+                padding:10px 14px;margin-bottom:8px;font-size:12px;color:#92400E'>
+        ⚠️ BIST 100 ~3-5 dk, Tüm BIST ~8-15 dk sürebilir.
+        İlk denemede BIST 30 veya BIST 100 önerilir.
+        Bu araç yatırım tavsiyesi değildir.
     </div>
     """, unsafe_allow_html=True)
 
     if scan_btn:
-        scope_map = {"BIST 30": bist_list['bist30'],
-                     "BIST 100": bist_list['bist100'],
-                     "Tüm BIST": bist_list['all']}
+        scope_map = {
+            "BIST 30": bist_lists['bist30'],
+            "BIST 100": bist_lists['bist100'],
+            "Tüm BIST": bist_lists['all']
+        }
         tickers = scope_map[scope]
 
-        prog_bar = st.progress(0, text="Veriler yükleniyor...")
-        status_ph = st.empty()
-
+        prog = st.progress(0, text="Veriler yükleniyor...")
         with st.spinner(""):
             all_data = all_data_getter(tickers, period="2y")
+        prog.progress(15, text=f"{len(all_data)} hisse yüklendi. Tarama başlıyor...")
 
-        prog_bar.progress(20, text=f"{len(all_data)} hisse yüklendi. Tarama başlıyor...")
-
-        scan_results = {'kisa': [], 'orta': []}
+        results_20, results_40 = [], []
         total = len(all_data)
 
-        # Manuel iterasyon — progress göster
-        psi_engine = BISTPSI()
-        from bist_psi import extract_features, build_feature_vector
-        feat_vecs = []
-        for ticker, df in list(all_data.items())[:80]:
-            try:
-                c = df['Close'].values.astype(float)[-40:]
-                v = df['Volume'].values.astype(float)[-40:]
-                feat_vecs.append(build_feature_vector(extract_features(c, v)))
-            except Exception:
-                pass
-        if len(feat_vecs) >= 5:
-            psi_engine.update_covariance(feat_vecs)
-
         for idx, (ticker, df) in enumerate(all_data.items()):
-            pct = 20 + int((idx / total) * 75)
-            prog_bar.progress(pct, text=f"Taranan: {ticker} ({idx+1}/{total})")
+            pct = 15 + int((idx / total) * 80)
+            prog.progress(pct, text=f"Taranan: {ticker} ({idx+1}/{total})")
 
-            for window, wlabel in [(20, 'kisa'), (40, 'orta')]:
-                try:
-                    opp = analyze_opportunity(
-                        ticker, df, window, psi_engine, all_data, min_psi
-                    )
-                    if opp and opp['confidence'] >= min_conf:
-                        scan_results[wlabel].append(opp)
-                except Exception:
-                    pass
+            # 20 günlük şablon
+            r20 = scan_single_ticker(ticker, df, all_data,
+                                     window=20, fut_window=30,
+                                     min_sim=min_sim)
+            if r20 and r20['confidence'] >= min_conf:
+                results_20.append(r20)
 
-        for wlabel in ['kisa', 'orta']:
-            scan_results[wlabel].sort(
-                key=lambda x: x['confidence'] * 0.5 + x['avg_psi'] * 0.5,
-                reverse=True
-            )
+            # 40 günlük şablon
+            r40 = scan_single_ticker(ticker, df, all_data,
+                                     window=40, fut_window=60,
+                                     min_sim=min_sim)
+            if r40 and r40['confidence'] >= min_conf:
+                results_40.append(r40)
 
-        prog_bar.progress(100, text="✅ Tarama tamamlandı!")
-        import time; time.sleep(0.5); prog_bar.empty(); status_ph.empty()
+        # Sırala
+        key_fn = lambda x: x['confidence'] * 0.5 + x['avg_sim'] * 0.3 + x['weighted_pct'] * 0.2
+        results_20.sort(key=key_fn, reverse=True)
+        results_40.sort(key=key_fn, reverse=True)
 
-        st.session_state['scan_results'] = scan_results
+        prog.progress(100, text="✅ Tamamlandı!")
+        import time; time.sleep(0.4); prog.empty()
+
+        st.session_state['scan_results_20'] = results_20
+        st.session_state['scan_results_40'] = results_40
         st.session_state['scan_scope'] = scope
         st.rerun()
 
-    # Sonuçlar
-    scan_results = st.session_state.get('scan_results')
-    if not scan_results:
-        st.info("Taramayı başlatmak için 'Tara' butonuna basın.")
-        return
+    # ── Sonuçlar ──
+    r20 = st.session_state.get('scan_results_20', [])
+    r40 = st.session_state.get('scan_results_40', [])
 
-    total_found = len(scan_results.get(20, [])) + len(scan_results.get(40, []))
-    if total_found == 0:
-        st.warning("Belirlenen kriterlerde fırsat bulunamadı. Eşikleri düşürmeyi deneyin.")
+    if 'scan_results_20' not in st.session_state:
+        st.info("Ayarları yapıp 'Tara' butonuna basın.")
         return
 
     scope_label = st.session_state.get('scan_scope', '')
-    st.success(f"✅ **{scope_label}** taraması tamamlandı — "
-               f"{len(scan_results.get(20,[]))} kısa vadeli + "
-               f"{len(scan_results.get(40,[]))} orta vadeli fırsat bulundu.")
+    total_found = len(r20) + len(r40)
 
-    tab_kisa, tab_orta = st.tabs([
-        f"📊 Kısa Vadeli — 20G ({len(scan_results.get(20,[]))} hisse)",
-        f"📈 Orta Vadeli — 40G ({len(scan_results.get(40,[]))} hisse)",
+    if total_found == 0:
+        st.warning(
+            f"**{scope_label}** taramasında kriter karşılayan hisse bulunamadı. "
+            "Min Benzerlik ve Min Güven değerlerini düşürün."
+        )
+        return
+
+    st.success(f"✅ **{scope_label}** — {len(r20)} kısa vadeli + {len(r40)} orta vadeli fırsat")
+
+    tab20, tab40 = st.tabs([
+        f"📊 Kısa Vadeli — 20G ({len(r20)} hisse)",
+        f"📈 Orta Vadeli — 40G ({len(r40)} hisse)",
     ])
 
-    for tab, wkey, wlabel in [
-        (tab_kisa, 20, "20 Günlük"),
-        (tab_orta, 40, "40 Günlük"),
+    for tab, results, wlabel, fut_label in [
+        (tab20, r20, "20 Günlük", "~30 gün"),
+        (tab40, r40, "40 Günlük", "~60 gün"),
     ]:
         with tab:
-            opps = scan_results.get(wkey, [])
-            if not opps:
-                st.info("Bu vadede kriterleri karşılayan hisse bulunamadı.")
+            if not results:
+                st.info("Bu vadede fırsat bulunamadı.")
                 continue
 
-            render_opportunity_table(opps, wlabel)
+            # Özet metrikler
+            m1,m2,m3,m4 = st.columns(4)
+            m1.metric("Bulunan", f"{len(results)} hisse")
+            m2.metric("Ort. Güven", f"%{np.mean([r['confidence'] for r in results]):.0f}")
+            m3.metric("Ort. Benzerlik", f"{np.mean([r['avg_sim'] for r in results]):.0f}")
+            m4.metric("Ort. Hedef Hareket", f"+{np.mean([r['weighted_pct'] for r in results]):.1f}%")
 
+            # Tablo
+            rows = []
+            for r in results:
+                fmt_str = ' / '.join(r['formations'][:2]) if r['formations'] else '—'
+                rows.append({
+                    '🏢 Hisse':      r['ticker'],
+                    '💰 Fiyat':      f"{r['current_price']:.2f} ₺",
+                    '📊 Son {wlabel}': f"{r['tpl_change']:+.1f}%",
+                    'RSI':           f"{r['tpl_rsi']:.0f}",
+                    '🎯 Hedef':      f"{r['target']:.2f} ₺",
+                    '📈 Beklenen':   f"+{r['weighted_pct']:.1f}%",
+                    '🔒 Güven':      f"%{r['confidence']:.0f}",
+                    '🔗 Benzerlik':  f"{r['avg_sim']:.0f}",
+                    '✅ Oy':         f"{r['up_count']}/{r['total_matches']}",
+                    '🔷 Formasyon':  fmt_str,
+                })
 
-def render_opportunity_table(opps: List[Dict], label: str):
-    """Fırsat listesini tablo ve kartlar halinde göster."""
+            st.dataframe(pd.DataFrame(rows),
+                         use_container_width=True, hide_index=True)
 
-    # Özet istatistikler
-    avg_conf = np.mean([o['confidence'] for o in opps])
-    avg_psi = np.mean([o['avg_psi'] for o in opps])
-    avg_target = np.mean([o['weighted_pct'] for o in opps])
+            st.markdown("---")
+            st.markdown(f"#### 🃏 Detay Kartlar — {fut_label} tahmin penceresi")
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Bulunan Fırsat", f"{len(opps)} hisse")
-    m2.metric("Ort. Güven", f"%{avg_conf:.0f}")
-    m3.metric("Ort. BIST-PSI", f"{avg_psi:.0f}")
-    m4.metric("Ort. Hedef Hareket", f"+{avg_target:.1f}%")
+            # 3 sütun kart
+            for row_i in range(0, min(len(results), 15), 3):
+                row = results[row_i:row_i+3]
+                cols = st.columns(3)
+                for col, r in zip(cols, row):
+                    with col:
+                        conf = r['confidence']
+                        c_col = ('#0E9F6E' if conf >= 65 else
+                                 '#E3A008' if conf >= 50 else '#E02424')
+                        conf_bar = int(conf / 5)
+                        fmt_html = "".join(
+                            f"<span style='background:#EFF6FF;color:#1A56DB;"
+                            f"font-size:9px;padding:1px 5px;border-radius:3px;margin:1px'>{f}</span>"
+                            for f in r['formations'][:2]
+                        ) or "<span style='font-size:10px;color:#aaa'>—</span>"
 
-    st.markdown("---")
+                        # Top 3 eşleşme
+                        match_lines = ""
+                        for m in r['top_matches'][:3]:
+                            m_color = '#0E9F6E' if m['fut_pct'] > 0 else '#E02424'
+                            match_lines += (
+                                f"<div style='display:flex;justify-content:space-between;"
+                                f"font-size:10px;padding:1px 0'>"
+                                f"<span style='color:#555'>{m['source']}</span>"
+                                f"<span style='color:#888'>%{m['sim']:.0f}</span>"
+                                f"<span style='color:{m_color};font-weight:600'>"
+                                f"{m['fut_pct']:+.1f}%</span></div>"
+                            )
 
-    # Tablo
-    rows = []
-    for o in opps:
-        reg_icons = {'trend_bull':'📈','trend_bear':'📉','sideways':'↔️',
-                     'high_vol':'⚡','low_vol':'😴'}
-        fmt_str = ' / '.join(o['formations'][:2]) if o['formations'] else '—'
-        rows.append({
-            '🏢 Hisse':          o['ticker'],
-            '💰 Fiyat':          f"{o['current_price']:.2f} ₺",
-            '🎯 Hedef':          f"{o['target']:.2f} ₺",
-            '📈 Beklenen':       f"+{o['weighted_pct']:.1f}%",
-            '🔒 Güven':          f"%{o['confidence']:.0f}",
-            '🧮 BIST-PSI':       f"{o['avg_psi']:.0f}",
-            '✅ Eşleşme':        f"{o['up_count']}/{o['total_matches']}",
-            '📊 Rejim':          f"{reg_icons.get(o['regime'],'')} {o['regime_label'].split()[0]}",
-            '🔷 Formasyon':      fmt_str,
-        })
+                        st.markdown(f"""
+                        <div style='background:#FFFFFF;border:1.5px solid #E5E9F0;
+                                    border-radius:10px;padding:14px 12px;margin-bottom:8px'>
+                            <div style='display:flex;justify-content:space-between;align-items:start'>
+                                <div>
+                                    <div style='font-size:20px;font-weight:800;
+                                                color:#1A1A2E'>{r['ticker']}</div>
+                                    <div style='font-size:10px;color:#888'>{r['regime']}</div>
+                                </div>
+                                <div style='text-align:right'>
+                                    <div style='font-size:10px;color:#888'>GÜVEN</div>
+                                    <div style='font-size:20px;font-weight:700;
+                                                color:{c_col}'>%{conf:.0f}</div>
+                                </div>
+                            </div>
 
-    df_table = pd.DataFrame(rows)
-    st.dataframe(df_table, use_container_width=True, hide_index=True)
+                            <div style='display:flex;justify-content:space-between;
+                                        margin:10px 0;gap:4px'>
+                                <div style='text-align:center'>
+                                    <div style='font-size:9px;color:#888'>GÜNCEL</div>
+                                    <div style='font-size:13px;font-weight:600'>
+                                        {r['current_price']:.2f} ₺</div>
+                                </div>
+                                <div style='text-align:center'>
+                                    <div style='font-size:9px;color:#888'>BEKLENEN</div>
+                                    <div style='font-size:13px;font-weight:700;color:#0E9F6E'>
+                                        +{r['weighted_pct']:.1f}%</div>
+                                </div>
+                                <div style='text-align:center'>
+                                    <div style='font-size:9px;color:#888'>HEDEF</div>
+                                    <div style='font-size:13px;font-weight:600;color:#0E9F6E'>
+                                        {r['target']:.2f} ₺</div>
+                                </div>
+                                <div style='text-align:center'>
+                                    <div style='font-size:9px;color:#888'>RSI</div>
+                                    <div style='font-size:13px;font-weight:600;
+                                                color:{"#E02424" if r["tpl_rsi"]>70 else "#0E9F6E" if r["tpl_rsi"]<30 else "#555"}'>
+                                        {r['tpl_rsi']:.0f}</div>
+                                </div>
+                            </div>
 
-    st.markdown("---")
-    st.markdown("#### 🃏 Detay Kartlar")
+                            <div style='background:#F9FAFB;border-radius:6px;
+                                        padding:6px 8px;margin:6px 0'>
+                                <div style='font-size:9px;color:#888;margin-bottom:3px'>
+                                    BENZER DÖNEMLER VE SONRASI
+                                </div>
+                                {match_lines}
+                            </div>
 
-    # Kartlar — 3 sütun
-    cols_per_row = 3
-    for row_start in range(0, len(opps), cols_per_row):
-        row_opps = opps[row_start:row_start + cols_per_row]
-        cols = st.columns(cols_per_row)
-        for col, o in zip(cols, row_opps):
-            with col:
-                conf = o['confidence']
-                psi = o['avg_psi']
-                conf_color = ('#0E9F6E' if conf >= 70 else
-                              '#E3A008' if conf >= 55 else '#E02424')
-                reg_icons = {'trend_bull':'📈','trend_bear':'📉','sideways':'↔️',
-                             'high_vol':'⚡','low_vol':'😴'}
-                reg_icon = reg_icons.get(o['regime'], '📊')
-                fmt_html = ""
-                for f in o['formations'][:2]:
-                    fmt_html += f"<span style='background:#EFF6FF;color:#1A56DB;font-size:9px;padding:1px 5px;border-radius:3px;margin:1px'>{f}</span>"
-
-                st.markdown(f"""
-                <div style='background:#FFFFFF;border:1.5px solid #E5E9F0;border-radius:10px;
-                            padding:14px 12px;margin-bottom:8px'>
-                    <div style='display:flex;justify-content:space-between;align-items:start'>
-                        <div>
-                            <div style='font-size:18px;font-weight:800;color:#1A1A2E'>{o['ticker']}</div>
-                            <div style='font-size:11px;color:#888'>{reg_icon} {o['regime_label']}</div>
+                            <div style='font-family:monospace;font-size:10px;color:{c_col}'>
+                                {'█'*conf_bar}{'░'*(20-conf_bar)} %{conf:.0f}
+                            </div>
+                            <div style='margin-top:5px'>{fmt_html}</div>
                         </div>
-                        <div style='text-align:right'>
-                            <div style='font-size:10px;color:#888'>GÜVEN</div>
-                            <div style='font-size:20px;font-weight:700;color:{conf_color}'>%{conf:.0f}</div>
-                        </div>
-                    </div>
-                    <div style='margin:10px 0;display:flex;justify-content:space-between'>
-                        <div>
-                            <div style='font-size:10px;color:#888'>GÜNCEL</div>
-                            <div style='font-size:14px;font-weight:600'>{o['current_price']:.2f} ₺</div>
-                        </div>
-                        <div style='text-align:center'>
-                            <div style='font-size:10px;color:#888'>BEKLENEN</div>
-                            <div style='font-size:14px;font-weight:700;color:#0E9F6E'>+{o['weighted_pct']:.1f}%</div>
-                        </div>
-                        <div style='text-align:right'>
-                            <div style='font-size:10px;color:#888'>HEDEF</div>
-                            <div style='font-size:14px;font-weight:600;color:#0E9F6E'>{o['target']:.2f} ₺</div>
-                        </div>
-                    </div>
-                    <div style='display:flex;justify-content:space-between;font-size:11px;color:#555;
-                                background:#F9FAFB;border-radius:6px;padding:6px 8px;margin:6px 0'>
-                        <span>BIST-PSI: <b>{psi:.0f}</b></span>
-                        <span>Eşleşme: <b>{o['up_count']}/{o['total_matches']}</b></span>
-                        <span>Dağılım: ±{o['dispersion']:.1f}%</span>
-                    </div>
-                    <div style='margin-top:6px'>{fmt_html if fmt_html else "<span style='font-size:10px;color:#aaa'>Formasyon yok</span>"}</div>
-                </div>
-                """, unsafe_allow_html=True)
+                        """, unsafe_allow_html=True)
