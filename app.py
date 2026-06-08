@@ -1,6 +1,7 @@
 import streamlit as st
 from formations import scan_all_formations, formation_summary_score
 from bist_psi import BISTPSI, detect_regime
+from scanner import render_scanner
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -910,6 +911,27 @@ def fig_breakdown_radar(breakdown, ticker):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main():
+    # Navigasyon
+    with st.sidebar:
+        st.markdown("### 📌 Sayfa")
+        page = st.radio("", ["🔍 Pattern Matcher", "🔭 Fırsat Tarayıcı"],
+                        label_visibility="collapsed", key="page_nav")
+        st.divider()
+
+    if page == "🔭 Fırsat Tarayıcı":
+        from scanner import render_scanner
+
+        def _get_data(tickers, period="2y"):
+            return fetch_batch(tickers, period)
+
+        bist_lists = {
+            'bist30': BIST30,
+            'bist100': BIST100,
+            'all': ALL_BIST
+        }
+        render_scanner(_get_data, bist_lists)
+        return
+
     st.markdown("## 📊 BIST Pattern Matcher")
     st.caption("Çok boyutlu hisse senedi şablon eşleştirme — fiyat + hacim + momentum + formasyon")
     st.divider()
