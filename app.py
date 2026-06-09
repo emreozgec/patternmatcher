@@ -5,6 +5,10 @@ from scanner import render_scanner
 from template_library import (
     render_library, save_template, init_library, get_library
 )
+from character_similarity import (
+    build_character_profile, character_similarity,
+    future_behavior_compatibility, historical_correlation, correlation_score
+)
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -566,10 +570,10 @@ def find_patterns(template_prices, template_volumes, all_data,
         breakdown['mtf_score'] = round(mtf_score, 1)
         breakdown['regime_match'] = win_regime == tpl_regime
 
-        if full_s < min_sim:
-            continue
-
         ms, me = best_i, best_i + n
+
+        if full_s < min_sim * 0.80:   # Gevşek ön filtre — final skor sonra hesaplanacak
+            continue
         match_closes  = closes[ms:me]
         match_volumes = volumes[ms:me]
         match_dates   = dates[ms:me]
@@ -586,13 +590,51 @@ def find_patterns(template_prices, template_volumes, all_data,
         win_z = zscore(match_closes)
         seg_map = segment_similarity_map(tpl_z, win_z, segments=8)
 
+        # Karakter benzerliği ve gelecek uyumluluğu
+        char_score = 50.0
+        fut_compat = 50.0
+        corr_score = 50.0
+        try:
+            tpl_profile = build_character_profile(tpl_prices, tpl_volumes)
+            win_profile = build_character_profile(w_prices, w_volumes)
+            char_s, char_bd = character_similarity(tpl_profile, win_profile)
+            char_score = char_s
+
+            if len(future_closes) > 3:
+                fut_compat = future_behavior_compatibility(
+                    tpl_prices, future_closes, tpl_profile, win_profile
+                )
+
+            corr = historical_correlation(tpl_prices, w_prices)
+            corr_score = correlation_score(corr)
+        except Exception:
+            char_bd = {}
+
+        # Final skora karakter, gelecek uyumu ve korelasyonu dahil et
+        # %75 mevcut skor + %10 karakter + %10 gelecek uyumu + %5 korelasyon
+        full_s = (0.75 * full_s +
+                  0.10 * char_score +
+                  0.10 * fut_compat +
+                  0.05 * corr_score)
+        full_s = round(min(100.0, full_s), 1)
+
+        if full_s < min_sim:
+            continue
+
+        breakdown['karakter']    = round(char_score, 1)
+        breakdown['gelecek_uyum'] = round(fut_compat, 1)
+        breakdown['korelasyon']  = round(corr_score, 1)
+
         results.append({
             'ticker':       ticker,
-            'similarity':   round(full_s, 1),
+            'similarity':   full_s,
             'breakdown':    breakdown,
-            'seg_map':      seg_map,          # OPT-4
-            'regime_match': win_regime == tpl_regime,  # OPT-3
-            'mtf_score':    round(mtf_score, 1),       # OPT-5
+            'seg_map':      seg_map,
+            'regime_match': win_regime == tpl_regime,
+            'mtf_score':    round(mtf_score, 1),
+            'char_score':   round(char_score, 1),
+            'fut_compat':   round(fut_compat, 1),
+            'corr_score':   round(corr_score, 1),
             'ms': ms, 'me': me,
             'match_closes':  match_closes,
             'match_volumes': match_volumes,
@@ -1214,11 +1256,31 @@ def main():
                     use_container_width=True)
 
     last_date = df.index[-1].strftime('%d.%m.%Y')
-    st.caption(f"📅 Son veri: **{last_date}** — {len(df)} gün")
 
-    # Şablon istatistikleri
+    # Şablon istatistikleri — grafik hemen altında hesaplanmalı
     seg_closes = seg_df['Close'].values
     seg_vols = seg_df['Volume'].values
+
+    # Caption + Kaydet butonu yan yana
+    _cap_col, _save_col = st.columns([4, 1])
+    _cap_col.caption(f"📅 Son veri: **{last_date}** — {len(df)} gün")
+    if _save_col.button("💾 Şablonu Kaydet", use_container_width=True,
+                        help="Seçili tarih aralığını kütüphaneye kaydet"):
+        try:
+            _fmts = scan_all_formations(seg_closes, seg_vols, 40)
+            _fmt_names = [f.name for f in _fmts[:3]]
+        except Exception:
+            _fmt_names = []
+        st.session_state['saving_template'] = {
+            'symbol': sym,
+            'start_date': str(sel_start),
+            'end_date': str(sel_end),
+            'prices': seg_closes,
+            'volumes': seg_vols,
+            'regime': "",
+            'formations': _fmt_names,
+        }
+        st.rerun()
     seg_rets = daily_returns(seg_closes)
     pct = (seg_closes[-1] - seg_closes[0]) / seg_closes[0] * 100
     rsi_last = calc_rsi(seg_closes)[-1]
@@ -1326,29 +1388,6 @@ def main():
         | Momentum (RSI+MACD) | %15 | RSI seviyesi ve MACD sinyal yönü benzerliği |
         | Formasyonlar | %10 | Double Top/Bottom, H&S, Trend kanalı, Breakout uyumu |
         """)
-
-    # Şablonu kaydet butonu
-    save_col1, save_col2 = st.columns([3,1])
-    with save_col2:
-        if st.button("💾 Şablonu Kaydet", use_container_width=True,
-                     help="Bu şablonu kütüphaneye kaydet"):
-            if len(seg_df) >= 5:
-                seg_formations_save = []
-                try:
-                    fmts = scan_all_formations(seg_closes, seg_vols, 40)
-                    seg_formations_save = [f.name for f in fmts[:3]]
-                except Exception:
-                    pass
-                # Kaydet dialog
-                st.session_state['saving_template'] = {
-                    'symbol': sym,
-                    'start_date': str(sel_start),
-                    'end_date': str(sel_end),
-                    'prices': seg_closes,
-                    'volumes': seg_vols,
-                    'regime': regime.describe() if 'regime' in dir() else "",
-                    'formations': seg_formations_save,
-                }
 
     if st.session_state.get('saving_template'):
         st.divider()
@@ -1559,7 +1598,9 @@ def main():
                     📊 Getiri: %{bd.get('getiri',0):.0f}<br>
                     📦 Hacim: %{bd.get('hacim',0):.0f} &nbsp;
                     ⚡ Mom: %{bd.get('momentum',0):.0f}<br>
-                    🕐 MTF: %{r.get('mtf_score',50):.0f} &nbsp;
+                    🧬 Karakter: %{r.get('char_score',50):.0f} &nbsp;
+                    🔮 Gelecek: %{r.get('fut_compat',50):.0f}<br>
+                    🔗 Korelasyon: %{r.get('corr_score',50):.0f} &nbsp;
                     {"✅ Rejim Eşleşti" if r.get('regime_match') else "⚠️ Farklı Rejim"}
                 </div>
                 <div style='margin:8px 0'>
