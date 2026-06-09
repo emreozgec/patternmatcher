@@ -1335,7 +1335,6 @@ def main():
             if len(seg_df) >= 5:
                 seg_formations_save = []
                 try:
-                    from formations import scan_all_formations
                     fmts = scan_all_formations(seg_closes, seg_vols, 40)
                     seg_formations_save = [f.name for f in fmts[:3]]
                 except Exception:
