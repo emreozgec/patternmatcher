@@ -394,7 +394,7 @@ def render_library(fetch_ticker_fn, find_patterns_fn,
                         'action': 'load',
                         'template': t
                     }
-                    st.session_state['page_nav'] = "🔍 Pattern Matcher"
+                    st.session_state['_goto_page'] = "🔍 Pattern Matcher"
                     st.rerun()
 
             # Notu güncelle

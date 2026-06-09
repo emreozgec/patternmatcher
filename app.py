@@ -1159,7 +1159,13 @@ def main():
     # Navigasyon
     with st.sidebar:
         st.markdown("### 📌 Sayfa")
-        page = st.radio("", ["🔍 Pattern Matcher", "🔭 Fırsat Tarayıcı", "📚 Şablon Kütüphanesi", "📊 Backtesting"],
+        # Yönlendirme isteği varsa index'i ayarla
+        _goto = st.session_state.pop('_goto_page', None)
+        _pages = ["🔍 Pattern Matcher", "🔭 Fırsat Tarayıcı",
+                  "📚 Şablon Kütüphanesi", "📊 Backtesting"]
+        _default_idx = _pages.index(_goto) if _goto and _goto in _pages else 0
+        page = st.radio("", _pages,
+                        index=_default_idx,
                         label_visibility="collapsed", key="page_nav")
         st.divider()
 
