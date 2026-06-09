@@ -5,6 +5,7 @@ from scanner import render_scanner
 from template_library import (
     render_library, save_template, init_library, get_library
 )
+from backtesting import render_backtest
 from character_similarity import (
     build_character_profile, character_similarity,
     future_behavior_compatibility, historical_correlation, correlation_score
@@ -1158,9 +1159,17 @@ def main():
     # Navigasyon
     with st.sidebar:
         st.markdown("### 📌 Sayfa")
-        page = st.radio("", ["🔍 Pattern Matcher", "🔭 Fırsat Tarayıcı", "📚 Şablon Kütüphanesi"],
+        page = st.radio("", ["🔍 Pattern Matcher", "🔭 Fırsat Tarayıcı", "📚 Şablon Kütüphanesi", "📊 Backtesting"],
                         label_visibility="collapsed", key="page_nav")
         st.divider()
+
+    if page == "📊 Backtesting":
+        render_backtest(
+            fetch_batch_fn  = fetch_batch,
+            find_patterns_fn= find_patterns,
+            all_bist_lists  = {'bist30': BIST30, 'bist100': BIST100, 'all': ALL_BIST}
+        )
+        return
 
     if page == "📚 Şablon Kütüphanesi":
         render_library(
