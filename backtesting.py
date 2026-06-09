@@ -488,10 +488,20 @@ def fig_trade_distribution(result: BacktestResult) -> go.Figure:
     if not rets:
         return go.Figure()
 
-    colors = ['#0E9F6E' if r > 0 else '#E02424' for r in rets]
+    reasons = [t.exit_reason for t in result.trades]
+    reason_counts = {
+        'target': reasons.count('target'),
+        'stop':   reasons.count('stop'),
+        'time':   reasons.count('time'),
+    }
+    reason_labels = {'target': '🎯 Hedef', 'stop': '🛑 Stop', 'time': '⏰ Süre'}
+    reason_colors = ['#0E9F6E', '#E02424', '#E3A008']
 
-    fig = make_subplots(rows=1, cols=2,
-                        subplot_titles=['Getiri Dağılımı', 'Çıkış Nedenleri'])
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=['Getiri Dağılımı', 'Çıkış Nedenleri'],
+        specs=[[{"type": "histogram"}, {"type": "pie"}]]
+    )
 
     # Histogram
     fig.add_trace(go.Histogram(
@@ -503,19 +513,10 @@ def fig_trade_distribution(result: BacktestResult) -> go.Figure:
     fig.add_vline(x=0, line_dash='dash', line_color='rgba(0,0,0,0.3)',
                   row=1, col=1)
 
-    # Çıkış nedeni pie
-    reasons = [t.exit_reason for t in result.trades]
-    reason_counts = {
-        'target': reasons.count('target'),
-        'stop':   reasons.count('stop'),
-        'time':   reasons.count('time'),
-    }
-    reason_labels = {'target': '🎯 Hedefe Ulaştı', 'stop': '🛑 Stop-Loss', 'time': '⏰ Süre Doldu'}
-    reason_colors = ['#0E9F6E', '#E02424', '#E3A008']
-
+    # Pie
     fig.add_trace(go.Pie(
-        labels=[reason_labels[k] for k in reason_counts],
-        values=list(reason_counts.values()),
+        labels=[reason_labels[k] for k in reason_counts if reason_counts[k] > 0],
+        values=[v for v in reason_counts.values() if v > 0],
         marker_colors=reason_colors,
         textinfo='percent+label',
         textfont_size=10,
