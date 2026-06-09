@@ -2,6 +2,9 @@ import streamlit as st
 from formations import scan_all_formations, formation_summary_score
 from bist_psi import BISTPSI, detect_regime
 from scanner import render_scanner
+from template_library import (
+    render_library, save_template, init_library, get_library
+)
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -1113,9 +1116,19 @@ def main():
     # Navigasyon
     with st.sidebar:
         st.markdown("### 📌 Sayfa")
-        page = st.radio("", ["🔍 Pattern Matcher", "🔭 Fırsat Tarayıcı"],
+        page = st.radio("", ["🔍 Pattern Matcher", "🔭 Fırsat Tarayıcı", "📚 Şablon Kütüphanesi"],
                         label_visibility="collapsed", key="page_nav")
         st.divider()
+
+    if page == "📚 Şablon Kütüphanesi":
+        render_library(
+            fetch_ticker_fn=fetch_ticker,
+            find_patterns_fn=find_patterns,
+            calc_consensus_fn=calc_consensus,
+            fetch_batch_fn=fetch_batch,
+            all_bist_lists={'bist30': BIST30, 'bist100': BIST100, 'all': ALL_BIST}
+        )
+        return
 
     if page == "🔭 Fırsat Tarayıcı":
         from scanner import render_scanner
@@ -1314,6 +1327,76 @@ def main():
         | Formasyonlar | %10 | Double Top/Bottom, H&S, Trend kanalı, Breakout uyumu |
         """)
 
+    # Şablonu kaydet butonu
+    save_col1, save_col2 = st.columns([3,1])
+    with save_col2:
+        if st.button("💾 Şablonu Kaydet", use_container_width=True,
+                     help="Bu şablonu kütüphaneye kaydet"):
+            if len(seg_df) >= 5:
+                seg_formations_save = []
+                try:
+                    from formations import scan_all_formations
+                    fmts = scan_all_formations(seg_closes, seg_vols, 40)
+                    seg_formations_save = [f.name for f in fmts[:3]]
+                except Exception:
+                    pass
+                # Kaydet dialog
+                st.session_state['saving_template'] = {
+                    'symbol': sym,
+                    'start_date': str(sel_start),
+                    'end_date': str(sel_end),
+                    'prices': seg_closes,
+                    'volumes': seg_vols,
+                    'regime': regime.describe() if 'regime' in dir() else "",
+                    'formations': seg_formations_save,
+                }
+
+    if st.session_state.get('saving_template'):
+        st.divider()
+        st.markdown("#### 💾 Şablonu Kaydet")
+        s = st.session_state['saving_template']
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            tpl_name = st.text_input("Şablon adı",
+                value=f"{s['symbol']} — {s['start_date']} / {s['end_date']}",
+                key="tpl_name_input")
+            tpl_notes = st.text_area("Notlar (isteğe bağlı)", key="tpl_notes_input", height=80)
+        with sc2:
+            tpl_tags_str = st.text_input("Etiketler (virgülle ayırın)",
+                placeholder="yükseliş, breakout, banka...", key="tpl_tags_input")
+        sc_b1, sc_b2 = st.columns(2)
+        with sc_b1:
+            if st.button("✅ Kaydet", type="primary", key="confirm_save_tpl"):
+                tags = [tag.strip() for tag in tpl_tags_str.split(',') if tag.strip()]
+                matches_now = st.session_state.get('matches')
+                consensus_now = None
+                if matches_now:
+                    try:
+                        consensus_now = calc_consensus(matches_now, float(s['prices'][-1]))
+                    except Exception:
+                        pass
+                save_template(
+                    symbol=s['symbol'],
+                    start_date=s['start_date'],
+                    end_date=s['end_date'],
+                    prices=np.array(s['prices']),
+                    volumes=np.array(s['volumes']),
+                    name=tpl_name,
+                    notes=tpl_notes,
+                    tags=tags,
+                    scan_results=matches_now,
+                    consensus=consensus_now,
+                    regime=s.get('regime', ''),
+                    formations=s.get('formations', []),
+                )
+                st.session_state['saving_template'] = None
+                st.success("✅ Şablon kaydedildi! Şablon Kütüphanesi sayfasından erişebilirsiniz.")
+                st.rerun()
+        with sc_b2:
+            if st.button("❌ İptal", key="cancel_save_tpl"):
+                st.session_state['saving_template'] = None
+                st.rerun()
+
     if scan:
         scan_list = {"BIST 30": BIST30, "BIST 100": BIST100, "Tüm BIST": ALL_BIST}[scope]
         scan_list = [t for t in scan_list if t != sym]
@@ -1345,6 +1428,18 @@ def main():
                                   "template_closes": seg_closes,
                                   "template_volumes": seg_vols,
                                   "selected": None})
+        # Açık şablon kaydı varsa konsensüsü güncelle
+        from template_library import get_library, update_scan_history
+        lib = get_library()
+        if lib:
+            last_t = lib[-1]
+            if (last_t['symbol'] == sym and
+                last_t['start_date'] == str(sel_start)):
+                try:
+                    cons = calc_consensus(matches, float(seg_closes[-1]))
+                    update_scan_history(last_t['id'], matches, cons or {})
+                except Exception:
+                    pass
         st.rerun()
 
     # ── SONUÇLAR ──
