@@ -22,6 +22,77 @@ def init_library():
         st.session_state.template_library = []
 
 
+
+def scan_template_today(template: Dict,
+                        all_data: Dict,
+                        find_patterns_fn,
+                        min_sim: float = 60.0) -> List[Dict]:
+    """
+    Kayıtlı bir şablona BUGÜN benzeyen hisseleri bul.
+    
+    Mantık:
+    - Şablonun fiyat/hacim verisini al
+    - Her hissenin SON [n_days] günlük hareketini al
+    - BIST-PSI ile karşılaştır
+    - Benzerlik yüksekse → o hisse şu an bu şablonu yapıyor
+    """
+    from bist_psi import BISTPSI, detect_regime
+    
+    tpl_prices  = np.array(template['prices'],  dtype=float)
+    tpl_volumes = np.array(template['volumes'], dtype=float)
+    n = len(tpl_prices)
+    
+    psi_engine = BISTPSI()
+    results = []
+    
+    for ticker, df in all_data.items():
+        closes  = df['Close'].values.astype(float)
+        volumes = df['Volume'].values.astype(float)
+        
+        if len(closes) < n:
+            continue
+        
+        # Son n günü al — bugünkü durum
+        recent_prices  = closes[-n:]
+        recent_volumes = volumes[-n:]
+        
+        try:
+            score, psi_result = psi_engine.compute(
+                tpl_prices, tpl_volumes,
+                recent_prices, recent_volumes
+            )
+        except Exception:
+            continue
+        
+        if score < min_sim:
+            continue
+        
+        # Şablonun geçmiş performansını hesapla
+        hist_return = template.get('pct_change', 0)
+        last_scan = template.get('scan_history', [])
+        exp_pct = 0.0
+        if last_scan:
+            c_data = last_scan[-1].get('consensus', {})
+            exp_pct = c_data.get('weighted_pct', 0)
+        
+        # Son fiyat değişimi
+        recent_change = (recent_prices[-1] - recent_prices[0]) / (recent_prices[0] + 1e-9) * 100
+        
+        results.append({
+            'ticker':       ticker,
+            'similarity':   round(score, 1),
+            'current_price': round(float(closes[-1]), 2),
+            'recent_change': round(recent_change, 2),
+            'expected_pct':  round(exp_pct, 2),
+            'target':        round(float(closes[-1]) * (1 + exp_pct/100), 2) if exp_pct > 0 else None,
+            'regime':        psi_result.regime.describe(),
+            'breakdown':     psi_result.dim_scores,
+            'mahalanobis':   psi_result.mahalanobis_sim,
+        })
+    
+    results.sort(key=lambda x: x['similarity'], reverse=True)
+    return results[:10]
+
 def save_template(symbol: str,
                   start_date: str,
                   end_date: str,
@@ -374,12 +445,19 @@ def render_library(fetch_ticker_fn, find_patterns_fn,
 
             # Aksiyonlar
             st.markdown("---")
-            ac1, ac2, ac3, ac4 = st.columns(4)
+            ac1, ac2, ac3, ac4, ac5 = st.columns(5)
 
-            # Yeniden tara
+            # Bugün Tara — en önemli buton
             with ac1:
-                if st.button("🔍 Yeniden Tara", key=f"rescan_{t['id']}",
-                             use_container_width=True, type="primary"):
+                if st.button("🔭 Bugün Tara", key=f"today_{t['id']}",
+                             use_container_width=True, type="primary",
+                             help="Bu şablona bugün benzeyen hisseleri bul"):
+                    st.session_state[f'today_scan_{t["id"]}'] = True
+
+            # Yeniden tara (geçmişle)
+            with ac2:
+                if st.button("🔍 Geçmişte Tara", key=f"rescan_{t['id']}",
+                             use_container_width=True):
                     st.session_state['library_action'] = {
                         'action': 'rescan',
                         'template': t
@@ -387,7 +465,7 @@ def render_library(fetch_ticker_fn, find_patterns_fn,
                     st.rerun()
 
             # Pattern Matcher'a yükle
-            with ac2:
+            with ac3:
                 if st.button("📊 Matcher'a Yükle", key=f"load_{t['id']}",
                              use_container_width=True):
                     st.session_state['library_action'] = {
@@ -398,16 +476,142 @@ def render_library(fetch_ticker_fn, find_patterns_fn,
                     st.rerun()
 
             # Notu güncelle
-            with ac3:
-                if st.button("✏️ Notu Düzenle", key=f"edit_{t['id']}",
+            with ac4:
+                if st.button("✏️ Düzenle", key=f"edit_{t['id']}",
                              use_container_width=True):
                     st.session_state[f'editing_{t["id"]}'] = True
 
             # Sil
-            with ac4:
+            with ac5:
                 if st.button("🗑️ Sil", key=f"del_{t['id']}",
                              use_container_width=True):
                     delete_template(t['id'])
+                    st.rerun()
+
+            # Bugün Tara sonuçları
+            if st.session_state.get(f'today_scan_{t["id"]}'):
+                st.markdown("---")
+                st.markdown(f"#### 🔭 Bugün Bu Şablona Benzeyen Hisseler")
+                st.caption(
+                    f"Şablon: **{t['name']}** ({t['n_days']} gün, {t['pct_change']:+.1f}%) — "
+                    f"Tüm hisselerin son {t['n_days']} günü bu şablonla karşılaştırılıyor."
+                )
+
+                today_scope = st.radio(
+                    "Tarama kapsamı:",
+                    ["BIST 30", "BIST 100", "Tüm BIST"],
+                    horizontal=True,
+                    key=f"today_scope_{t['id']}"
+                )
+                today_min_sim = st.slider(
+                    "Min Benzerlik", 50, 85, 60, 1,
+                    key=f"today_sim_{t['id']}"
+                )
+
+                if st.button("▶️ Taramayı Başlat",
+                             key=f"run_today_{t['id']}", type="primary"):
+                    scope_map = {
+                        "BIST 30":  all_bist_lists['bist30'],
+                        "BIST 100": all_bist_lists['bist100'],
+                        "Tüm BIST": all_bist_lists['all']
+                    }
+                    tickers = scope_map[today_scope]
+
+                    with st.spinner(f"Veri yükleniyor..."):
+                        today_data = fetch_batch_fn(tickers, period="6mo")
+
+                    with st.spinner(f"{len(today_data)} hisse güncel veriyle karşılaştırılıyor..."):
+                        today_results = scan_template_today(
+                            t, today_data, find_patterns_fn, today_min_sim
+                        )
+
+                    st.session_state[f'today_results_{t["id"]}'] = today_results
+
+                today_results = st.session_state.get(f'today_results_{t["id"]}', [])
+                if today_results:
+                    st.success(f"✅ **{len(today_results)}** hisse bu şablona benziyor!")
+
+                    # Sonuç tablosu
+                    rows = []
+                    for r in today_results:
+                        exp_str = f"+{r['expected_pct']:.1f}%" if r['expected_pct'] > 0 else "—"
+                        tgt_str = f"{r['target']:.2f} ₺" if r['target'] else "—"
+                        rows.append({
+                            '🏢 Hisse':       r['ticker'],
+                            '🎯 Benzerlik':   f"%{r['similarity']}",
+                            '💰 Güncel':      f"{r['current_price']:.2f} ₺",
+                            '📊 Son {t["n_days"]}G': f"{r['recent_change']:+.1f}%",
+                            '📈 Beklenen':    exp_str,
+                            '🎯 Hedef':       tgt_str,
+                            '📐 Rejim':       r['regime'],
+                        })
+                    st.dataframe(pd.DataFrame(rows),
+                                 use_container_width=True, hide_index=True)
+
+                    # Detay kartlar
+                    st.markdown("##### Detay")
+                    cols_per_row = 3
+                    COLORS = ['#1A56DB','#E3A008','#0E9F6E','#9061F9','#E02424',
+                              '#E8734A','#4ECDC4','#FF6B6B','#A8E6CF','#74B9FF']
+                    for row_i in range(0, min(len(today_results), 9), cols_per_row):
+                        row_items = today_results[row_i:row_i+cols_per_row]
+                        rcols = st.columns(cols_per_row)
+                        for col, r in zip(rcols, row_items):
+                            with col:
+                                sim = r['similarity']
+                                c_col = ('#0E9F6E' if sim >= 72
+                                         else '#E3A008' if sim >= 60
+                                         else '#E02424')
+                                exp_pct = r['expected_pct']
+                                exp_html = (
+                                    f"<div style='color:#0E9F6E;font-size:14px;font-weight:700'>"
+                                    f"+{exp_pct:.1f}%</div>"
+                                    if exp_pct > 0 else
+                                    "<div style='color:#888;font-size:12px'>Beklenti yok</div>"
+                                )
+                                bd = r.get('breakdown', {})
+                                st.markdown(f"""
+                                <div style='background:#FFFFFF;border:1.5px solid #E5E9F0;
+                                            border-radius:10px;padding:12px;margin-bottom:6px'>
+                                    <div style='display:flex;justify-content:space-between'>
+                                        <div style='font-size:18px;font-weight:800;
+                                                    color:#1A1A2E'>{r['ticker']}</div>
+                                        <div style='text-align:right'>
+                                            <div style='font-size:10px;color:#888'>BENZERLİK</div>
+                                            <div style='font-size:20px;font-weight:700;
+                                                        color:{c_col}'>%{sim:.0f}</div>
+                                        </div>
+                                    </div>
+                                    <div style='margin:8px 0;display:flex;
+                                                justify-content:space-between;font-size:12px'>
+                                        <div>
+                                            <div style='color:#888;font-size:9px'>GÜNCEL</div>
+                                            <b>{r['current_price']:.2f} ₺</b>
+                                        </div>
+                                        <div style='text-align:center'>
+                                            <div style='color:#888;font-size:9px'>SON {t["n_days"]}G</div>
+                                            <b style='color:{"#0E9F6E" if r["recent_change"]>0 else "#E02424"}'>
+                                            {r["recent_change"]:+.1f}%</b>
+                                        </div>
+                                        <div style='text-align:right'>
+                                            <div style='color:#888;font-size:9px'>BEKLENEN</div>
+                                            {exp_html}
+                                        </div>
+                                    </div>
+                                    <div style='background:#F9FAFB;border-radius:6px;
+                                                padding:5px 8px;font-size:10px;color:#555'>
+                                        {r['regime']}<br>
+                                        Mahalanobis: {r['mahalanobis']:.0f}
+                                    </div>
+                                </div>
+                                """, unsafe_allow_html=True)
+
+                elif st.session_state.get(f'today_results_{t["id"]}') is not None:
+                    st.warning("Bu şablona benzer hisse bulunamadı. Eşiği düşürün.")
+
+                if st.button("✖ Kapat", key=f"close_today_{t['id']}"):
+                    st.session_state[f'today_scan_{t["id"]}'] = False
+                    st.session_state[f'today_results_{t["id"]}'] = None
                     st.rerun()
 
             # Not düzenleme formu
