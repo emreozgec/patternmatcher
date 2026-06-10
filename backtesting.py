@@ -88,6 +88,23 @@ class BacktestResult:
 # SİNYAL ÜRETİCİ — Geçmişteki tüm pattern eşleşmelerini bul
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _fast_similarity(tpl_z: np.ndarray, candidate: np.ndarray) -> float:
+    """Hızlı Pearson benzerliği — backtesting için optimize."""
+    n = min(len(tpl_z), len(candidate))
+    if n < 3:
+        return 0.0
+    a, b = tpl_z[:n], candidate[:n]
+    if np.std(a) < 1e-9 or np.std(b) < 1e-9:
+        return 0.0
+    r = float(np.corrcoef(a, b)[0,1])
+    return (r + 1) / 2 * 100
+
+
+def _zscore_fast(arr: np.ndarray) -> np.ndarray:
+    mu, sigma = arr.mean(), arr.std()
+    return (arr - mu) / (sigma + 1e-9)
+
+
 def generate_historical_signals(
     all_data:       Dict[str, pd.DataFrame],
     find_patterns_fn,
@@ -98,78 +115,85 @@ def generate_historical_signals(
     max_signals:    int   = 200,
 ) -> List[Signal]:
     """
-    Tüm hisseler için geçmişteki pattern sinyallerini üret.
-
-    Her hisse için 2 yıllık veriyi kaydırarak tarar:
-    - Her `step_days` günde bir o güne kadarki veriyi şablon olarak al
-    - Pattern eşleşmesi varsa sinyal kaydet
-    - Gerçekte o günden sonra ne olduğunu bilmiyormuş gibi davran (look-ahead yok)
+    Hızlandırılmış sinyal üretimi — Pearson tabanlı hızlı eşleştirme.
+    BIST 100 için ~2-3 dakikada tamamlanır.
     """
     signals = []
 
+    # Tüm hisse verilerini numpy'a çevir — hız için
+    ticker_data = {}
     for ticker, df in all_data.items():
         closes  = df['Close'].values.astype(float)
         volumes = df['Volume'].values.astype(float)
         dates   = [d.strftime('%Y-%m-%d') for d in df.index]
+        if len(closes) >= window * 3:
+            ticker_data[ticker] = (closes, volumes, dates)
+
+    tickers = list(ticker_data.keys())
+
+    for ticker, (closes, volumes, dates) in ticker_data.items():
         n_total = len(closes)
-
-        if n_total < window * 3:
-            continue
-
-        # Geçmişte her step_days'te bir sinyal üret
-        # Minimum: window + 30 gün gelecek verisi gerekli
         start_idx = window + 10
         end_idx   = n_total - 30
 
         for i in range(start_idx, end_idx, step_days):
-            tpl_prices  = closes[i-window:i]
-            tpl_volumes = volumes[i-window:i]
+            tpl_prices = closes[i-window:i]
+            tpl_z      = _zscore_fast(tpl_prices)
 
-            # Pattern eşleşmesi — sadece i'den önceki veriyle (gerçekçi)
-            hist_data = {}
-            for other_ticker, other_df in all_data.items():
+            # Hızlı tarama: sadece Pearson ile diğer hisselerde ara
+            matches = []
+            for other_ticker, (oc, ov, _) in ticker_data.items():
                 if other_ticker == ticker:
                     continue
-                oc = other_df['Close'].values.astype(float)
-                ov = other_df['Volume'].values.astype(float)
-                # Sadece o tarihe kadar olan veriyi kullan (look-ahead yok)
                 other_end = min(i, len(oc))
-                if other_end >= window * 2 + 20:
-                    hist_data[other_ticker] = pd.DataFrame({
-                        'Close':  oc[:other_end],
-                        'Volume': ov[:other_end],
-                    }, index=other_df.index[:other_end])
+                if other_end < window * 2 + 20:
+                    continue
 
-            try:
-                matches = find_patterns_fn(
-                    tpl_prices, tpl_volumes, hist_data,
-                    top_n=5, min_sim=min_psi, future_mult=1.5
-                )
-            except Exception:
+                # Sliding window — sadece kaba Pearson
+                best_sim, best_start = -1, 0
+                fut_win = min(int(window * 1.5), 45)
+                max_start = other_end - window - fut_win
+                step = max(1, window // 4)
+
+                for j in range(0, max_start, step):
+                    w_z = _zscore_fast(oc[j:j+window])
+                    sim = _fast_similarity(tpl_z, w_z)
+                    if sim > best_sim:
+                        best_sim, best_start = sim, j
+
+                if best_sim < min_psi * 0.85:
+                    continue
+
+                # Gelecek hareketi
+                fut_start = best_start + window
+                fut_end   = min(fut_start + fut_win, other_end)
+                if fut_end <= fut_start:
+                    continue
+                future = oc[fut_start:fut_end]
+                fut_pct = (future[-1] - future[0]) / (future[0] + 1e-9) * 100
+
+                matches.append({
+                    'similarity': round(best_sim, 1),
+                    'fut_pct':    round(fut_pct, 2),
+                })
+
+            if len(matches) < 2:
                 continue
 
-            if not matches:
-                continue
-
-            # Konsensüs hesapla
-            weights = np.array([m['similarity'] for m in matches], dtype=float)
-            if weights.sum() < 1e-9:
-                continue
-            weights /= weights.sum()
-            pcts = np.array([m['fut_pct'] for m in matches])
+            # Konsensüs
+            sims    = np.array([m['similarity'] for m in matches])
+            weights = sims / (sims.sum() + 1e-9)
+            pcts    = np.array([m['fut_pct'] for m in matches])
 
             weighted_pct  = float(np.dot(weights, pcts))
-            up_weight     = float(sum(w for w, p in zip(weights, pcts) if p > 0))
-            direction_conf = up_weight * 100
-            dispersion     = float(np.std(pcts))
-            disp_penalty   = min(30, dispersion * 1.2)
-            confidence     = max(0, direction_conf - disp_penalty)
+            up_weight     = float(sum(w for w,p in zip(weights,pcts) if p > 0))
+            dispersion    = float(np.std(pcts))
+            confidence    = max(0, up_weight*100 - min(30, dispersion*1.2))
 
-            # Sadece bullish sinyaller
             if confidence < min_confidence or weighted_pct <= 0:
                 continue
 
-            avg_psi = float(np.dot(weights, [m['similarity'] for m in matches]))
+            avg_psi = float(np.dot(weights, sims))
 
             signals.append(Signal(
                 ticker       = ticker,
@@ -182,9 +206,9 @@ def generate_historical_signals(
             ))
 
             if len(signals) >= max_signals:
+                signals.sort(key=lambda s: s.entry_date)
                 return signals
 
-    # Tarihe göre sırala
     signals.sort(key=lambda s: s.entry_date)
     return signals
 
@@ -671,8 +695,10 @@ def render_backtest(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict):
     st.markdown("""
     <div style='background:#FFF7ED;border:1px solid #FED7AA;border-radius:8px;
                 padding:10px 14px;font-size:12px;color:#92400E;margin-bottom:8px'>
-        ⚠️ BIST 30 ~5-10 dk, BIST 100 ~20-30 dk sürebilir. İlk denemede BIST 30 öneririz.<br>
-        Bu analiz geçmiş performansa dayanır — gelecek getiri garantisi değildir.
+        ⚡ <b>Hız ipucu:</b> BIST 30 ~1-2 dk, BIST 100 ~3-5 dk.
+        Backtesting hızlandırılmış Pearson algoritması kullanır.
+        Tüm BIST için max_signals=150 otomatik uygulanır.<br>
+        ⚠️ Bu analiz geçmiş performansa dayanır — gelecek getiri garantisi değildir.
     </div>
     """, unsafe_allow_html=True)
 
