@@ -815,51 +815,120 @@ def render_backtest(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict):
     st.divider()
     st.markdown("#### 🔬 Algoritma Kalibrasyon Özeti")
     best = max(results, key=lambda r: r.sharpe)
-    worst = min(results, key=lambda r: r.sharpe)
 
-    # PSI skoru ile getiri korelasyonu
     all_trades = results[0].trades + results[1].trades
-    if all_trades:
-        psi_scores = [t.signal_score for t in all_trades]
-        returns    = [t.pct_return   for t in all_trades]
-        if np.std(psi_scores) > 0 and np.std(returns) > 0:
-            corr = np.corrcoef(psi_scores, returns)[0,1]
-        else:
-            corr = 0.0
+    if not all_trades:
+        return
 
-        conf_scores = [t.confidence for t in all_trades]
-        if np.std(conf_scores) > 0:
-            conf_corr = np.corrcoef(conf_scores, returns)[0,1]
-        else:
-            conf_corr = 0.0
+    psi_scores  = np.array([t.signal_score for t in all_trades])
+    conf_scores = np.array([t.confidence   for t in all_trades])
+    returns     = np.array([t.pct_return   for t in all_trades])
 
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("PSI → Getiri Korelasyonu",
-                  f"{corr:.3f}",
-                  help=">0.2 ise algoritma anlamlı")
-        k2.metric("Güven → Getiri Korelasyonu",
-                  f"{conf_corr:.3f}",
-                  help=">0.2 ise güven skoru anlamlı")
-        k3.metric("En İyi Strateji",
-                  best.strategy_name,
-                  delta=f"Sharpe: {best.sharpe:.2f}")
-        k4.metric("Toplam Sinyal",
-                  len(signals),
-                  help="2 yıllık periyotta üretilen sinyal sayısı")
+    corr      = float(np.corrcoef(psi_scores,  returns)[0,1]) if np.std(psi_scores)  > 0 else 0.0
+    conf_corr = float(np.corrcoef(conf_scores, returns)[0,1]) if np.std(conf_scores) > 0 else 0.0
 
-        # Öneri
-        if corr > 0.15:
-            st.success(
-                f"✅ **PSI skoru anlamlı**: Yüksek PSI skoru daha iyi getiriyle "
-                f"korele ({corr:.2f}). Algoritma sinyal kalitesini iyi ölçüyor."
-            )
-        elif corr > 0:
-            st.warning(
-                f"⚠️ **PSI skoru zayıf korelasyon** ({corr:.2f}). "
-                "Min PSI eşiğini yükseltmeyi deneyin."
-            )
-        else:
-            st.error(
-                f"❌ **PSI skoru negatif korelasyon** ({corr:.2f}). "
-                "Algoritma parametrelerinin gözden geçirilmesi gerekiyor."
-            )
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("PSI → Getiri Korelasyonu",  f"{corr:.3f}",
+              help=">0.15 anlamlı, <0 ters etki")
+    k2.metric("Güven → Getiri Korelasyonu", f"{conf_corr:.3f}",
+              help=">0.15 anlamlı, <0 anti-consensus etkisi")
+    k3.metric("En İyi Strateji", best.strategy_name,
+              delta=f"Sharpe: {best.sharpe:.2f}")
+    k4.metric("Toplam Sinyal", len(signals))
+
+    # Akıllı yorum
+    if len(signals) < 50:
+        st.warning(
+            f"⚠️ **İstatistiksel güç yetersiz** ({len(signals)} sinyal). "
+            "Korelasyon sonuçları güvenilir değil. "
+            "BIST 100 ile min PSI 55 ayarıyla tekrar deneyin."
+        )
+    elif corr > 0.15 and conf_corr > 0.15:
+        st.success(
+            f"✅ **Algoritma iyi kalibre**: PSI ({corr:.2f}) ve güven ({conf_corr:.2f}) "
+            "skoru yüksek olanlar daha iyi getiri sağlıyor."
+        )
+    elif corr < -0.10 or conf_corr < -0.10:
+        st.info(
+            f"💡 **Anti-consensus etkisi tespit edildi** "
+            f"(PSI: {corr:.2f}, Güven: {conf_corr:.2f}). "
+            "Bu bilinen bir piyasa davranışı: çok belirgin patternler fiyata zaten yansımış olabilir. "
+            "Sharpe oranı yüksekse sistem çalışıyor demektir — "
+            "sadece güven skoru filtresini **tersine** kullanmayı deneyin."
+        )
+    else:
+        st.warning(
+            f"⚠️ **Zayıf korelasyon** (PSI: {corr:.2f}, Güven: {conf_corr:.2f}). "
+            "PSI eşiğini değiştirerek tekrar test edin."
+        )
+
+    st.divider()
+    st.markdown("#### 🎯 Optimal Parametre Analizi")
+
+    # PSI bandına göre ortalama getiri
+    st.markdown("**PSI Skoruna Göre Ortalama Getiri**")
+    bins_psi = [(55,65),(65,72),(72,80),(80,100)]
+    psi_band_data = []
+    for lo, hi in bins_psi:
+        mask = (psi_scores >= lo) & (psi_scores < hi)
+        if mask.sum() >= 3:
+            avg_ret  = float(returns[mask].mean())
+            win_rate = float((returns[mask] > 0).mean() * 100)
+            psi_band_data.append({
+                'PSI Bandı':   f"{lo}-{hi}",
+                'Sinyal Sayısı': int(mask.sum()),
+                'Ort. Getiri': f"{avg_ret:+.1f}%",
+                'Kazanç Oranı': f"{win_rate:.0f}%",
+                'Öneri': '✅ Kullan' if avg_ret > 0 and win_rate > 50 else '⚠️ Dikkat'
+            })
+    if psi_band_data:
+        st.dataframe(pd.DataFrame(psi_band_data),
+                     use_container_width=True, hide_index=True)
+
+    # Güven bandına göre ortalama getiri
+    st.markdown("**Güven Skoruna Göre Ortalama Getiri**")
+    bins_conf = [(40,55),(55,65),(65,75),(75,100)]
+    conf_band_data = []
+    for lo, hi in bins_conf:
+        mask = (conf_scores >= lo) & (conf_scores < hi)
+        if mask.sum() >= 3:
+            avg_ret  = float(returns[mask].mean())
+            win_rate = float((returns[mask] > 0).mean() * 100)
+            conf_band_data.append({
+                'Güven Bandı':   f"{lo}-{hi}",
+                'Sinyal Sayısı': int(mask.sum()),
+                'Ort. Getiri': f"{avg_ret:+.1f}%",
+                'Kazanç Oranı': f"{win_rate:.0f}%",
+                'Öneri': '✅ Kullan' if avg_ret > 0 and win_rate > 50 else '⚠️ Dikkat'
+            })
+    if conf_band_data:
+        st.dataframe(pd.DataFrame(conf_band_data),
+                     use_container_width=True, hide_index=True)
+
+    # Optimal PSI ve güven önerisi
+    best_psi_band  = None
+    best_psi_ret   = -999
+    best_conf_band = None
+    best_conf_ret  = -999
+
+    for lo, hi in bins_psi:
+        mask = (psi_scores >= lo) & (psi_scores < hi)
+        if mask.sum() >= 5:
+            avg = float(returns[mask].mean())
+            if avg > best_psi_ret:
+                best_psi_ret, best_psi_band = avg, f"{lo}-{hi}"
+
+    for lo, hi in bins_conf:
+        mask = (conf_scores >= lo) & (conf_scores < hi)
+        if mask.sum() >= 5:
+            avg = float(returns[mask].mean())
+            if avg > best_conf_ret:
+                best_conf_ret, best_conf_band = avg, f"{lo}-{hi}"
+
+    if best_psi_band and best_conf_band:
+        st.success(
+            f"🎯 **Optimal Parametre Önerisi:** "
+            f"PSI bandı **{best_psi_band}** (ort. getiri {best_psi_ret:+.1f}%) — "
+            f"Güven bandı **{best_conf_band}** (ort. getiri {best_conf_ret:+.1f}%). "
+            f"Bu bandları Pattern Matcher ve Fırsat Tarayıcı'da kullanın."
+        )
