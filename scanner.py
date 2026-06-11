@@ -250,9 +250,13 @@ def render_scanner(all_data_getter, bist_lists):
     with c1:
         scope = st.selectbox("Kapsam", ["BIST 30", "BIST 100", "Tüm BIST"], index=1)
     with c2:
-        min_sim = st.slider("Min Benzerlik", 55, 80, 60, 1)
+        min_sim = st.slider("Min Benzerlik", 55, 85, 80, 1,
+                     help="Backtesting: PSI 80+ en iyi (%%61 kazanç)")
     with c3:
-        min_conf = st.slider("Min Güven %", 40, 75, 48, 1)
+        min_conf = st.slider("Min Güven %", 40, 80, 55, 1,
+                      help="Backtesting: 55-65 bandı optimal (%66 kazanç, +5.2%)")
+        max_conf = st.slider("Maks Güven %", 60, 100, 68, 1,
+                      help="Anti-consensus: 65+ güven sinyalleri daha az kazanıyor")
     with c4:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         scan_btn = st.button("🔭 Tara", type="primary", use_container_width=True)
@@ -290,14 +294,14 @@ def render_scanner(all_data_getter, bist_lists):
             r20 = scan_single_ticker(ticker, df, all_data,
                                      window=20, fut_window=30,
                                      min_sim=min_sim)
-            if r20 and r20['confidence'] >= min_conf:
+            if r20 and min_conf <= r20['confidence'] <= max_conf:
                 results_20.append(r20)
 
             # 40 günlük şablon
             r40 = scan_single_ticker(ticker, df, all_data,
                                      window=40, fut_window=60,
                                      min_sim=min_sim)
-            if r40 and r40['confidence'] >= min_conf:
+            if r40 and min_conf <= r40['confidence'] <= max_conf:
                 results_40.append(r40)
 
         # Sırala

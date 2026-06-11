@@ -505,7 +505,7 @@ def multi_timeframe_check(tpl_prices: np.ndarray, win_prices: np.ndarray) -> flo
 
 
 def find_patterns(template_prices, template_volumes, all_data,
-                  top_n=5, min_sim=65, future_mult=1.5):
+                  top_n=5, min_sim=80, future_mult=1.5):
     """
     BIST-PSI Pattern Matching — 5 Optimizasyon ile:
 
@@ -1201,6 +1201,21 @@ def main():
         render_scanner(_get_data, bist_lists)
         return
 
+    # Kütüphaneden yükleme isteği geldi mi?
+    lib_action = st.session_state.get('library_action')
+    if lib_action and lib_action.get('action') == 'load':
+        t = lib_action['template']
+        st.session_state['df']     = pd.DataFrame(
+            {'Close': t['prices'], 'Volume': t['volumes']},
+            index=pd.date_range(end=pd.Timestamp(t['end_date']),
+                                periods=len(t['prices']), freq='B')
+        )
+        st.session_state['symbol'] = t['symbol']
+        st.session_state['_load_start'] = t['start_date']
+        st.session_state['_load_end']   = t['end_date']
+        st.session_state['library_action'] = None
+        st.info(f"📚 **{t['name']}** kütüphaneden yüklendi. Tarihler otomatik ayarlandı.")
+
     st.markdown("## 📊 BIST Pattern Matcher")
     st.caption("Çok boyutlu hisse senedi şablon eşleştirme — fiyat + hacim + momentum + formasyon")
     st.divider()
@@ -1248,11 +1263,24 @@ def main():
     st.markdown("### 2️⃣ Şablon Aralığı")
     date_list = [d.date() for d in df.index]
     mid = len(date_list) // 2
+
+    # Kütüphaneden yüklenen tarihler varsa kullan
+    _ls = st.session_state.pop('_load_start', None)
+    _le = st.session_state.pop('_load_end', None)
+    try:
+        _default_start = pd.Timestamp(_ls).date() if _ls else date_list[max(0,mid-20)]
+        _default_end   = pd.Timestamp(_le).date() if _le else date_list[min(len(date_list)-1,mid+20)]
+        _default_start = max(date_list[0], min(_default_start, date_list[-2]))
+        _default_end   = max(date_list[1], min(_default_end,   date_list[-1]))
+    except Exception:
+        _default_start = date_list[max(0,mid-20)]
+        _default_end   = date_list[min(len(date_list)-1,mid+20)]
+
     c_s, c_e = st.columns(2)
-    sel_start = c_s.date_input("📍 Başlangıç", value=date_list[max(0,mid-20)],
+    sel_start = c_s.date_input("📍 Başlangıç", value=_default_start,
                                min_value=date_list[0], max_value=date_list[-2],
                                key="sel_start")
-    sel_end = c_e.date_input("🏁 Bitiş", value=date_list[min(len(date_list)-1,mid+20)],
+    sel_end = c_e.date_input("🏁 Bitiş", value=_default_end,
                              min_value=date_list[1], max_value=date_list[-1],
                              key="sel_end")
 
@@ -1384,7 +1412,8 @@ def main():
     with c_scope:
         scope = st.radio("Kapsam", ["BIST 30","BIST 100","Tüm BIST"], horizontal=True)
     with c_sim:
-        min_sim = st.slider("Min. Benzerlik %", 55, 85, 65, 1)
+        min_sim = st.slider("Min. Benzerlik %", 55, 85, 80, 1,
+                     help="Backtesting: PSI 80+ optimal (%61 kazanç, +4.6%)")
     with c_btn:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         scan = st.button("🔍 Tara", type="primary", use_container_width=True)
@@ -1508,6 +1537,10 @@ def main():
 
     st.markdown(f"### 📊 En Benzer {len(matches)} Hisse")
     st.caption("Bir hisseye tıklayarak detay görün — tarihsel konum, normalize karşılaştırma, benzerlik profili.")
+    st.info(
+        "💡 **Backtesting Önerisi:** PSI 80+ ve güven %55-65 bandı en iyi performansı gösterdi "
+        "(%61 ve %66 kazanç oranı). Yüksek güven (75+) olanları atlayın — anti-consensus etkisi var."
+    )
 
     # ── KONSENSÜS PANELİ ──
     current_price = float(df['Close'].iloc[-1])

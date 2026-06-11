@@ -705,9 +705,11 @@ def render_backtest(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict):
     with col1:
         scope      = st.selectbox("Hisse Evreni", ["BIST 30","BIST 100","Tüm BIST"], index=0)
         window     = st.selectbox("Şablon Uzunluğu", [10, 20, 30, 40], index=1)
-        min_psi    = st.slider("Min BIST-PSI", 55, 80, 62, 1)
+        min_psi    = st.slider("Min BIST-PSI", 55, 85, 80, 1,
+                        help="Optimal bant: 80+ (%%61 kazanç, +4.6%%)")
     with col2:
-        min_conf   = st.slider("Min Güven %", 40, 75, 50, 1)
+        min_conf   = st.slider("Min Güven %", 40, 80, 55, 1,
+                        help="Optimal bant: 55-65 (%%66 kazanç, +5.2%%)")
         hold_days  = st.slider("Sabit Tutma (gün)", 5, 60, 20, 5)
         pos_size   = st.slider("Pozisyon Büyüklüğü %", 5, 25, 10, 5) / 100
     with col3:
