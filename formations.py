@@ -1015,21 +1015,34 @@ def scan_all_formations(prices: np.ndarray, volumes: np.ndarray,
     all_formations: List[Formation] = []
 
     detectors = [
-        detect_head_and_shoulders,
-        detect_double_triple,
-        detect_rectangle,
-        detect_triangles,
-        detect_wedges,
-        lambda p, v=None: detect_flags_pennants(p, volumes),
-        lambda p, v=None: detect_cup_and_handle(p),
-        lambda p, v=None: detect_elliott_wave(p),
-        lambda p, v=None: detect_harmonics(p),
-        lambda p, v=None: detect_wyckoff(p, volumes),
+        # Klasik — geliştirilmiş versiyonlar önce
+        lambda p, v: detect_double_top_improved(p, v),
+        lambda p, v: detect_head_and_shoulders(p, v),
+        lambda p, v: detect_double_triple(p),
+        lambda p, v: detect_rectangle(p),
+        # Yeni formasyonlar
+        lambda p, v: detect_rounding_bottom(p),
+        lambda p, v: detect_island_reversal(p, v),
+        lambda p, v: detect_bump_and_run(p, v),
+        lambda p, v: detect_three_drives(p),
+        lambda p, v: detect_abcd_pattern(p),
+        # Trend
+        lambda p, v: detect_triangles(p),
+        lambda p, v: detect_wedges(p),
+        lambda p, v: detect_flags_pennants(p, v),
+        lambda p, v: detect_cup_and_handle(p),
+        # Elliott — geliştirilmiş önce
+        lambda p, v: detect_elliott_improved(p),
+        lambda p, v: detect_elliott_wave(p),
+        # Harmonik
+        lambda p, v: detect_harmonics(p),
+        # Wyckoff
+        lambda p, v: detect_wyckoff(p, v),
     ]
 
     for detector in detectors:
         try:
-            found = detector(prices)
+            found = detector(prices, volumes)
             all_formations.extend(found)
         except Exception:
             pass
@@ -1038,11 +1051,13 @@ def scan_all_formations(prices: np.ndarray, volumes: np.ndarray,
     filtered = [f for f in all_formations if f.confidence >= min_confidence]
     filtered.sort(key=lambda x: (x.confidence, x.status == 'active'), reverse=True)
 
-    # Duplicate temizle (aynı isim, yakın konfidens)
+    # Duplicate temizle — aynı isim ve yakın konfidens
     seen = set()
     unique = []
     for f in filtered:
-        key = f.name
+        # Geliştirilmiş versiyonlar orijinallerin yerini alsın
+        base_name = f.name.replace(" (Geliştirilmiş)", "").replace(" ★", "")
+        key = base_name
         if key not in seen:
             seen.add(key)
             unique.append(f)
@@ -1084,3 +1099,782 @@ def formation_summary_score(formations: List[Formation]) -> dict:
         'dominant_signal': dominant,
         'top_formations': formations[:3]
     }
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 7. YENİ FORMASYONLAR
+# ══════════════════════════════════════════════════════════════════════════════
+
+def detect_rounding_bottom(prices: np.ndarray) -> List[Formation]:
+    """
+    Rounding Bottom (Kaşık / Saucer Bottom)
+    
+    Uzun süren yuvarlak dip yapısı — güçlü bullish dönüş sinyali.
+    Karakteristik özellikleri:
+    - Fiyat yavaş yavaş düşer, düz bir dip yapar, sonra yavaş yavaş çıkar
+    - Hacim dip bölgesinde düşük, çıkışta artar
+    - Parabolic eğri uyumu yüksekse güven artar
+    """
+    prices = np.array(prices, dtype=float)
+    n = len(prices)
+    if n < 30:
+        return []
+
+    x = np.arange(n, dtype=float)
+
+    # Parabolic (2. derece polinom) fit
+    coeffs = np.polyfit(x, prices, 2)
+    a, b, c = coeffs
+    fitted = np.polyval(coeffs, x)
+
+    # R² hesapla
+    ss_res = np.sum((prices - fitted) ** 2)
+    ss_tot = np.sum((prices - prices.mean()) ** 2)
+    r2 = 1 - ss_res / (ss_tot + 1e-9)
+
+    # Rounding bottom: a > 0 (yukarı açık parabol) ve yüksek R²
+    if a <= 0 or r2 < 0.55:
+        return []
+
+    # Dip noktası
+    bottom_x = -b / (2 * a)
+    if not (n * 0.25 < bottom_x < n * 0.75):
+        return []
+
+    bottom_idx = int(np.clip(bottom_x, 0, n-1))
+    bottom_price = float(prices[bottom_idx])
+    left_price = float(prices[:bottom_idx].max()) if bottom_idx > 0 else float(prices[0])
+    right_price = float(prices[bottom_idx:].max()) if bottom_idx < n-1 else float(prices[-1])
+
+    depth = (min(left_price, right_price) - bottom_price) / (min(left_price, right_price) + 1e-9)
+    if depth < 0.05:
+        return []
+
+    conf = min(100, r2 * 60 + depth * 200 + 20)
+    target = right_price + (right_price - bottom_price)
+    status = "active" if prices[-1] > fitted[-1] * 0.98 else "forming"
+
+    return [Formation(
+        name="Rounding Bottom (Kaşık)",
+        category="klasik",
+        confidence=round(conf, 1),
+        status=status,
+        direction="bullish",
+        key_points=[
+            (0, float(prices[0]), "Sol Kenar"),
+            (bottom_idx, bottom_price, "Dip"),
+            (n-1, float(prices[-1]), "Sağ Kenar")
+        ],
+        target=round(target, 2),
+        stop=round(bottom_price * 0.97, 2),
+        description=f"Yuvarlak dip (kaşık) formasyonu. R²={r2:.2f}. "
+                   f"Dip derinliği: {depth*100:.1f}%. Hedef: {target:.2f}"
+    )]
+
+
+def detect_island_reversal(prices: np.ndarray, volumes: np.ndarray) -> List[Formation]:
+    """
+    Island Reversal (Ada Dönüşü)
+    
+    İki gap (boşluk) arasında sıkışan fiyat adası.
+    - Bullish: aşağı gap → fiyat adası → yukarı gap
+    - Bearish: yukarı gap → fiyat adası → aşağı gap
+    
+    Nadirdir ama çok güçlü dönüş sinyali.
+    Gap = günlük %1.5+ fiyat sıçraması
+    """
+    prices = np.array(prices, dtype=float)
+    n = len(prices)
+    if n < 10:
+        return []
+
+    GAP_THRESHOLD = 0.015  # %1.5
+
+    # Gap'leri bul
+    gaps_up   = []  # (index, gap_pct)
+    gaps_down = []
+
+    for i in range(1, n):
+        chg = (prices[i] - prices[i-1]) / (prices[i-1] + 1e-9)
+        if chg > GAP_THRESHOLD:
+            gaps_up.append(i)
+        elif chg < -GAP_THRESHOLD:
+            gaps_down.append(i)
+
+    results = []
+
+    # Bullish Island: önce gap_down, sonra gap_up
+    for gd in gaps_down:
+        for gu in gaps_up:
+            if gu <= gd + 1:
+                continue
+            island_len = gu - gd
+            if island_len > 20:
+                continue  # Ada çok uzun
+
+            island = prices[gd:gu]
+            island_low  = float(island.min())
+            island_high = float(island.max())
+            gap_size    = abs(prices[gd] - prices[gd-1]) / (prices[gd-1] + 1e-9)
+
+            conf = min(100, gap_size * 1000 + (1 - island_len/20) * 40 + 20)
+            target = prices[gu] + (prices[gd-1] - island_low)
+            status = "active" if gu >= n - 5 else "completed"
+
+            results.append(Formation(
+                name="Bullish Island Reversal",
+                category="klasik",
+                confidence=round(conf, 1),
+                status=status,
+                direction="bullish",
+                key_points=[
+                    (gd-1, float(prices[gd-1]), "Gap Önce"),
+                    (gd, float(prices[gd]), "Gap Down"),
+                    ((gd+gu)//2, float(island.mean()), "Ada"),
+                    (gu, float(prices[gu]), "Gap Up"),
+                ],
+                target=round(target, 2),
+                stop=round(island_low * 0.98, 2),
+                description=f"Bullish ada dönüşü — iki gap arası izole fiyat. "
+                           f"Ada uzunluğu: {island_len} gün. Hedef: {target:.2f}"
+            ))
+
+    # Bearish Island: önce gap_up, sonra gap_down
+    for gu in gaps_up:
+        for gd in gaps_down:
+            if gd <= gu + 1:
+                continue
+            island_len = gd - gu
+            if island_len > 20:
+                continue
+
+            island = prices[gu:gd]
+            island_high = float(island.max())
+            gap_size    = abs(prices[gu] - prices[gu-1]) / (prices[gu-1] + 1e-9)
+
+            conf = min(100, gap_size * 1000 + (1 - island_len/20) * 40 + 20)
+            target = prices[gd] - (island_high - prices[gd])
+            status = "active" if gd >= n - 5 else "completed"
+
+            results.append(Formation(
+                name="Bearish Island Reversal",
+                category="klasik",
+                confidence=round(conf, 1),
+                status=status,
+                direction="bearish",
+                key_points=[
+                    (gu-1, float(prices[gu-1]), "Gap Önce"),
+                    (gu, float(prices[gu]), "Gap Up"),
+                    ((gu+gd)//2, float(island.mean()), "Ada"),
+                    (gd, float(prices[gd]), "Gap Down"),
+                ],
+                target=round(target, 2),
+                stop=round(island_high * 1.02, 2),
+                description=f"Bearish ada dönüşü. Ada: {island_len} gün. Hedef: {target:.2f}"
+            ))
+
+    # En güvenilir sonuçları döndür
+    results.sort(key=lambda x: x.confidence, reverse=True)
+    return results[:2]
+
+
+def detect_bump_and_run(prices: np.ndarray, volumes: np.ndarray) -> List[Formation]:
+    """
+    Bump and Run Reversal (BARR)
+    
+    Üç aşamalı spekülatif balon formasyonu:
+    1. Lead-in: normal trend
+    2. Bump: dik açılı hızlı yükseliş (spekülatif balon)
+    3. Run: sert düşüş
+    
+    Bullish BARR: ters versiyonu (V dip)
+    """
+    prices = np.array(prices, dtype=float)
+    n = len(prices)
+    if n < 25:
+        return []
+
+    results = []
+    third = n // 3
+
+    # Bölümlere ayır
+    lead_in = prices[:third]
+    bump    = prices[third:2*third]
+    run_sec = prices[2*third:]
+
+    # Lead-in trend açısı
+    x_lead = np.arange(len(lead_in), dtype=float)
+    slope_lead, _ = np.polyfit(x_lead, lead_in, 1)
+    norm_lead = slope_lead / (lead_in.mean() + 1e-9)
+
+    # Bump trend açısı
+    x_bump = np.arange(len(bump), dtype=float)
+    slope_bump, _ = np.polyfit(x_bump, bump, 1)
+    norm_bump = slope_bump / (bump.mean() + 1e-9)
+
+    # BARR Bearish: lead-in yükseliyor, bump daha dik yükseliyor, run düşüyor
+    if norm_lead > 0.001 and norm_bump > norm_lead * 1.8:
+        run_change = (run_sec[-1] - run_sec[0]) / (run_sec[0] + 1e-9)
+        if run_change < -0.05:
+            angle_ratio = norm_bump / (norm_lead + 1e-9)
+            conf = min(100, min(angle_ratio / 3, 1) * 50 + abs(run_change) * 300 + 20)
+            target = lead_in.mean() - (bump.max() - lead_in.mean()) * 0.5
+            results.append(Formation(
+                name="Bump and Run Reversal (Bearish)",
+                category="klasik",
+                confidence=round(conf, 1),
+                status="active" if 2*third >= n - third else "completed",
+                direction="bearish",
+                key_points=[
+                    (0, float(prices[0]), "Lead-in Başlangıç"),
+                    (third, float(prices[third]), "Bump Başlangıcı"),
+                    (int(2*third - 1), float(bump.max()), "Bump Zirvesi"),
+                    (n-1, float(prices[-1]), "Run")
+                ],
+                target=round(target, 2),
+                stop=round(float(bump.max()) * 1.03, 2),
+                description=f"Spekülatif balon dönüşü. Bump açısı lead-in'in "
+                           f"{angle_ratio:.1f}x'i. Hedef: {target:.2f}"
+            ))
+
+    # BARR Bullish: ters — sert düşüş sonrası toparlanma
+    if norm_lead < -0.001 and norm_bump < norm_lead * 1.8:
+        run_change = (run_sec[-1] - run_sec[0]) / (run_sec[0] + 1e-9)
+        if run_change > 0.05:
+            angle_ratio = abs(norm_bump) / (abs(norm_lead) + 1e-9)
+            conf = min(100, min(angle_ratio / 3, 1) * 50 + run_change * 300 + 20)
+            target = lead_in.mean() + (lead_in.mean() - bump.min()) * 0.5
+            results.append(Formation(
+                name="Bump and Run Reversal (Bullish)",
+                category="klasik",
+                confidence=round(conf, 1),
+                status="active",
+                direction="bullish",
+                key_points=[
+                    (0, float(prices[0]), "Lead-in"),
+                    (third, float(prices[third]), "Bump Başlangıcı"),
+                    (int(2*third - 1), float(bump.min()), "Dip"),
+                    (n-1, float(prices[-1]), "Toparlanma")
+                ],
+                target=round(target, 2),
+                stop=round(float(bump.min()) * 0.97, 2),
+                description=f"Ters BARR — sert düşüş sonrası toparlanma. Hedef: {target:.2f}"
+            ))
+
+    return results
+
+
+def detect_three_drives(prices: np.ndarray) -> List[Formation]:
+    """
+    Three Drives Pattern
+    
+    Elliott Wave'in basitleştirilmiş versiyonu.
+    3 eşit büyüklükte drive (impuls) — Fibonacci oranlarıyla doğrulama.
+    
+    Bullish Three Drives: 3 düşük dip (her biri öncekinden düşük)
+    Bearish Three Drives: 3 yüksek tepe (her biri öncekinden yüksek)
+    
+    Her drive arasında Fibonacci düzeltmesi beklenir.
+    """
+    prices = np.array(prices, dtype=float)
+    n = len(prices)
+    if n < 20:
+        return []
+
+    order = max(2, n // 8)
+    peaks, troughs = find_pivots(prices, order)
+    results = []
+
+    # Bearish Three Drives: 3 yükselen tepe
+    if len(peaks) >= 3:
+        for i in range(len(peaks) - 2):
+            p1, p2, p3 = peaks[i], peaks[i+1], peaks[i+2]
+            v1, v2, v3 = prices[p1], prices[p2], prices[p3]
+
+            # Her tepe öncekinden yüksek olmalı
+            if not (v1 < v2 < v3):
+                continue
+
+            # Sürücüler arası mesafe benzer olmalı
+            d1 = v2 - v1
+            d2 = v3 - v2
+            if d1 < 1e-9:
+                continue
+            drive_ratio = d2 / d1
+            if not (0.7 <= drive_ratio <= 1.4):
+                continue
+
+            # Düzeltme seviyeleri (tepe aralarındaki dipler)
+            between1 = [t for t in troughs if p1 < t < p2]
+            between2 = [t for t in troughs if p2 < t < p3]
+            fib_ok = False
+            if between1 and between2:
+                ret1 = (v2 - prices[between1[-1]]) / (d1 + 1e-9)
+                ret2 = (v3 - prices[between2[-1]]) / (d2 + 1e-9)
+                fib_ok = (
+                    any(abs(ret1 - r) < 0.1 for r in [0.382, 0.5, 0.618]) and
+                    any(abs(ret2 - r) < 0.1 for r in [0.382, 0.5, 0.618])
+                )
+
+            conf = min(100, (1 - abs(drive_ratio - 1)) * 50 + (30 if fib_ok else 0) + 20)
+            target = v3 - (v3 - v1) * 0.618
+            status = "active" if p3 >= n - order * 2 else "completed"
+
+            results.append(Formation(
+                name="Three Drives (Bearish)",
+                category="klasik",
+                confidence=round(conf, 1),
+                status=status,
+                direction="bearish",
+                key_points=[
+                    (p1, v1, "Drive 1"),
+                    (p2, v2, "Drive 2"),
+                    (p3, v3, "Drive 3")
+                ],
+                target=round(target, 2),
+                stop=round(v3 * 1.02, 2),
+                description=f"3 eşit yükselen tepe. Drive oranı: {drive_ratio:.2f}. "
+                           f"Fibonacci: {'✓' if fib_ok else '✗'}. Hedef: {target:.2f}"
+            ))
+
+    # Bullish Three Drives: 3 alçalan dip
+    if len(troughs) >= 3:
+        for i in range(len(troughs) - 2):
+            t1, t2, t3 = troughs[i], troughs[i+1], troughs[i+2]
+            v1, v2, v3 = prices[t1], prices[t2], prices[t3]
+
+            if not (v1 > v2 > v3):
+                continue
+
+            d1 = v1 - v2
+            d2 = v2 - v3
+            if d1 < 1e-9:
+                continue
+            drive_ratio = d2 / d1
+            if not (0.7 <= drive_ratio <= 1.4):
+                continue
+
+            between1 = [p for p in peaks if t1 < p < t2]
+            between2 = [p for p in peaks if t2 < p < t3]
+            fib_ok = False
+            if between1 and between2:
+                ret1 = (prices[between1[-1]] - v2) / (d1 + 1e-9)
+                ret2 = (prices[between2[-1]] - v3) / (d2 + 1e-9)
+                fib_ok = (
+                    any(abs(ret1 - r) < 0.1 for r in [0.382, 0.5, 0.618]) and
+                    any(abs(ret2 - r) < 0.1 for r in [0.382, 0.5, 0.618])
+                )
+
+            conf = min(100, (1 - abs(drive_ratio - 1)) * 50 + (30 if fib_ok else 0) + 20)
+            target = v3 + (v1 - v3) * 0.618
+            status = "active" if t3 >= n - order * 2 else "completed"
+
+            results.append(Formation(
+                name="Three Drives (Bullish)",
+                category="klasik",
+                confidence=round(conf, 1),
+                status=status,
+                direction="bullish",
+                key_points=[
+                    (t1, v1, "Drive 1"),
+                    (t2, v2, "Drive 2"),
+                    (t3, v3, "Drive 3")
+                ],
+                target=round(target, 2),
+                stop=round(v3 * 0.98, 2),
+                description=f"3 eşit alçalan dip. Drive oranı: {drive_ratio:.2f}. "
+                           f"Fibonacci: {'✓' if fib_ok else '✗'}. Hedef: {target:.2f}"
+            ))
+
+    results.sort(key=lambda x: x.confidence, reverse=True)
+    return results[:2]
+
+
+def detect_abcd_pattern(prices: np.ndarray) -> List[Formation]:
+    """
+    ABCD Pattern — en temel harmonik formasyon
+    
+    4 nokta: A → B → C → D
+    - AB ve CD paralel (eşit uzunluk veya Fibonacci oranı)
+    - BC düzeltmesi %38-88 arasında
+    - CD = AB veya 1.27x/1.618x AB
+    
+    Bullish ABCD: aşağı → yukarı → aşağı → yukarı (W şekli)
+    Bearish ABCD: yukarı → aşağı → yukarı → aşağı (M şekli)
+    """
+    prices = np.array(prices, dtype=float)
+    n = len(prices)
+    if n < 15:
+        return []
+
+    order = max(2, n // 8)
+    peaks, troughs = find_pivots(prices, order)
+    results = []
+
+    # Bullish ABCD: A=trough, B=peak, C=trough, D=peak (beklenen)
+    if len(troughs) >= 2 and len(peaks) >= 1:
+        for i in range(len(troughs) - 1):
+            a_idx = troughs[i]
+            # B: A'dan sonraki tepe
+            b_candidates = [p for p in peaks if p > a_idx]
+            if not b_candidates:
+                continue
+            b_idx = b_candidates[0]
+            # C: B'den sonraki dip
+            c_candidates = [t for t in troughs if t > b_idx]
+            if not c_candidates:
+                continue
+            c_idx = c_candidates[0]
+
+            A, B, C = prices[a_idx], prices[b_idx], prices[c_idx]
+            AB = B - A
+            BC = B - C
+            if AB < 1e-9:
+                continue
+
+            # BC düzeltme oranı: %38-88
+            bc_ret = BC / AB
+            if not (0.38 <= bc_ret <= 0.886):
+                continue
+
+            # D tahmini: C + CD (CD = AB veya Fib uzantısı)
+            for cd_ratio in [1.0, 1.27, 1.618]:
+                D_target = C + AB * cd_ratio
+                conf = 40 + (20 if in_range(bc_ret, 0.618, 0.08) else 0) + \
+                       (20 if cd_ratio == 1.0 else 10) + \
+                       (10 if in_range(bc_ret, 0.786, 0.08) else 0)
+
+                # D henüz oluşmadıysa "forming"
+                status = "forming"
+                actual_d = None
+                d_candidates = [p for p in peaks if p > c_idx]
+                if d_candidates:
+                    d_idx = d_candidates[0]
+                    actual_d = prices[d_idx]
+                    if in_range(actual_d, D_target, D_target * 0.05):
+                        status = "active" if d_idx >= n - order * 2 else "completed"
+                        conf = min(100, conf + 15)
+
+                results.append(Formation(
+                    name=f"ABCD Bullish (CD={cd_ratio}x)",
+                    category="harmonik",
+                    confidence=round(conf, 1),
+                    status=status,
+                    direction="bullish",
+                    key_points=[
+                        (a_idx, A, "A"),
+                        (b_idx, B, "B"),
+                        (c_idx, C, "C"),
+                        (c_idx + (b_idx - a_idx), D_target, "D (Hedef)")
+                    ],
+                    target=round(D_target + AB * 0.618, 2),
+                    stop=round(C * 0.97, 2),
+                    description=f"ABCD bullish. BC={bc_ret:.2f}, CD={cd_ratio}x. "
+                               f"D hedefi: {D_target:.2f}"
+                ))
+                break  # En iyi ratio
+
+    # Bearish ABCD: A=peak, B=trough, C=peak, D=trough (beklenen)
+    if len(peaks) >= 2 and len(troughs) >= 1:
+        for i in range(len(peaks) - 1):
+            a_idx = peaks[i]
+            b_candidates = [t for t in troughs if t > a_idx]
+            if not b_candidates:
+                continue
+            b_idx = b_candidates[0]
+            c_candidates = [p for p in peaks if p > b_idx]
+            if not c_candidates:
+                continue
+            c_idx = c_candidates[0]
+
+            A, B, C = prices[a_idx], prices[b_idx], prices[c_idx]
+            AB = A - B
+            BC = C - B
+            if AB < 1e-9:
+                continue
+
+            bc_ret = BC / AB
+            if not (0.38 <= bc_ret <= 0.886):
+                continue
+
+            for cd_ratio in [1.0, 1.27, 1.618]:
+                D_target = C - AB * cd_ratio
+                conf = 40 + (20 if in_range(bc_ret, 0.618, 0.08) else 0) + \
+                       (15 if cd_ratio == 1.0 else 8)
+
+                status = "forming"
+                d_candidates = [t for t in troughs if t > c_idx]
+                if d_candidates:
+                    d_idx = d_candidates[0]
+                    if in_range(prices[d_idx], D_target, D_target * 0.05):
+                        status = "active" if d_idx >= n - order * 2 else "completed"
+                        conf = min(100, conf + 15)
+
+                results.append(Formation(
+                    name=f"ABCD Bearish (CD={cd_ratio}x)",
+                    category="harmonik",
+                    confidence=round(conf, 1),
+                    status=status,
+                    direction="bearish",
+                    key_points=[
+                        (a_idx, A, "A"),
+                        (b_idx, B, "B"),
+                        (c_idx, C, "C"),
+                        (c_idx + (b_idx - a_idx), D_target, "D (Hedef)")
+                    ],
+                    target=round(D_target - AB * 0.618, 2),
+                    stop=round(C * 1.02, 2),
+                    description=f"ABCD bearish. BC={bc_ret:.2f}. D hedefi: {D_target:.2f}"
+                ))
+                break
+
+    results.sort(key=lambda x: x.confidence, reverse=True)
+    return results[:3]
+
+
+# ── Mevcut detect_double_triple için iyileştirme ──────────────────────────────
+
+def detect_double_top_improved(prices: np.ndarray, volumes: np.ndarray) -> List[Formation]:
+    """
+    Geliştirilmiş Double Top/Bottom — hacim onayı ile.
+    
+    Double Top için hacim şartı:
+    - İlk tepede yüksek hacim
+    - İkinci tepede daha düşük hacim (zayıflama sinyali)
+    - Neckline kırılışında yüksek hacim
+    
+    Tolerans daha hassas: %2 (eskisi %3)
+    """
+    prices = np.array(prices, dtype=float)
+    volumes = np.array(volumes, dtype=float) if volumes is not None else np.ones(len(prices))
+    n = len(prices)
+    if n < 15:
+        return []
+
+    order = max(2, n // 8)
+    peaks, troughs = find_pivots(prices, order)
+    results = []
+
+    # Double Top
+    for i in range(len(peaks) - 1):
+        p1, p2 = peaks[i], peaks[i+1]
+        if p2 - p1 < order * 2:
+            continue
+        v1p, v2p = prices[p1], prices[p2]
+        diff = abs(v1p - v2p) / (max(v1p, v2p) + 1e-9)
+        if diff > 0.025:  # Daha sıkı tolerans
+            continue
+
+        between = [t for t in troughs if p1 < t < p2]
+        if not between:
+            continue
+        valley_idx = between[0]
+        valley = prices[valley_idx]
+
+        # Hacim onayı
+        vol_confirm = 1.0
+        if len(volumes) == n:
+            vol1 = volumes[max(0,p1-2):p1+3].mean()
+            vol2 = volumes[max(0,p2-2):p2+3].mean()
+            if vol2 < vol1 * 0.9:  # İkinci tepede hacim düşmüş
+                vol_confirm = 1.2
+
+        height = max(v1p, v2p) - valley
+        target = valley - height
+        conf = min(100, (1 - diff/0.025) * 55 + 25) * vol_confirm
+        conf = min(100, conf)
+
+        status = "active" if p2 >= n - order * 2 else "completed"
+        results.append(Formation(
+            name="Double Top (Geliştirilmiş)",
+            category="klasik",
+            confidence=round(conf, 1),
+            status=status,
+            direction="bearish",
+            key_points=[
+                (p1, v1p, "Tepe 1"),
+                (valley_idx, valley, "Valley"),
+                (p2, v2p, "Tepe 2")
+            ],
+            target=round(target, 2),
+            stop=round(max(v1p, v2p) * 1.02, 2),
+            description=f"Double Top. Fark: %{diff*100:.1f}. "
+                       f"Hacim onayı: {'✓' if vol_confirm > 1 else '✗'}. Hedef: {target:.2f}"
+        ))
+
+    # Double Bottom
+    for i in range(len(troughs) - 1):
+        t1, t2 = troughs[i], troughs[i+1]
+        if t2 - t1 < order * 2:
+            continue
+        v1t, v2t = prices[t1], prices[t2]
+        diff = abs(v1t - v2t) / (min(v1t, v2t) + 1e-9)
+        if diff > 0.025:
+            continue
+
+        between = [p for p in peaks if t1 < p < t2]
+        if not between:
+            continue
+        peak_idx = between[0]
+        peak_val = prices[peak_idx]
+
+        vol_confirm = 1.0
+        if len(volumes) == n:
+            vol1 = volumes[max(0,t1-2):t1+3].mean()
+            vol2 = volumes[max(0,t2-2):t2+3].mean()
+            if vol2 < vol1 * 0.9:
+                vol_confirm = 1.2
+
+        height = peak_val - min(v1t, v2t)
+        target = peak_val + height
+        conf = min(100, (1 - diff/0.025) * 55 + 25) * vol_confirm
+        conf = min(100, conf)
+
+        status = "active" if t2 >= n - order * 2 else "completed"
+        results.append(Formation(
+            name="Double Bottom (Geliştirilmiş)",
+            category="klasik",
+            confidence=round(conf, 1),
+            status=status,
+            direction="bullish",
+            key_points=[
+                (t1, v1t, "Dip 1"),
+                (peak_idx, peak_val, "Peak"),
+                (t2, v2t, "Dip 2")
+            ],
+            target=round(target, 2),
+            stop=round(min(v1t, v2t) * 0.98, 2),
+            description=f"Double Bottom. Fark: %{diff*100:.1f}. "
+                       f"Hacim onayı: {'✓' if vol_confirm > 1 else '✗'}. Hedef: {target:.2f}"
+        ))
+
+    return results
+
+
+def detect_elliott_improved(prices: np.ndarray) -> List[Formation]:
+    """
+    Geliştirilmiş Elliott Wave — daha sıkı kurallar ve alternasyon kontrolü.
+    
+    Yeni kurallar:
+    - Dalga 3 hiçbir zaman en kısa impuls olmaz (Kural 2 katı)
+    - Dalga 4 Dalga 1'in fiyat bölgesine girmez (Kural 3 katı)
+    - Alternasyon: Dalga 2 ve 4 farklı düzeltme şekli
+    - Fibonacci uzantı hedefleri (1.618, 2.618)
+    """
+    prices = np.array(prices, dtype=float)
+    n = len(prices)
+    if n < 25:
+        return []
+
+    order = max(2, n // 9)
+    peaks, troughs = find_pivots(prices, order)
+    all_pivots = sorted(
+        [(i, prices[i], 'peak') for i in peaks] +
+        [(i, prices[i], 'trough') for i in troughs],
+        key=lambda x: x[0]
+    )
+
+    if len(all_pivots) < 6:
+        return []
+
+    results = []
+
+    for start in range(len(all_pivots) - 5):
+        pts = all_pivots[start:start+6]
+        idxs = [p[0] for p in pts]
+        vals = [p[1] for p in pts]
+        types = [p[2] for p in pts]
+
+        bull_pat = ['trough','peak','trough','peak','trough','peak']
+        bear_pat = ['peak','trough','peak','trough','peak','trough']
+        is_bull = (types == bull_pat)
+        is_bear = (types == bear_pat)
+        if not (is_bull or is_bear):
+            continue
+
+        w0,w1,w2,w3,w4,w5 = vals
+
+        if is_bull:
+            wave1 = w1 - w0
+            wave2 = w1 - w2
+            wave3 = w3 - w2
+            wave4 = w3 - w4
+            wave5 = w5 - w4
+
+            # Kural 1: Dalga 2, Dalga 0'ın altına inmez
+            if w2 <= w0:
+                continue
+            # Kural 2: Dalga 3 en kısa olamaz (katı)
+            if wave3 <= min(wave1, wave5) * 0.9:
+                continue
+            # Kural 3: Dalga 4, Dalga 1'in üstüne çıkmaz
+            if w4 <= w1:
+                continue
+            # Fibonacci kontrol
+            ret2 = wave2 / (wave1 + 1e-9)
+            ret4 = wave4 / (wave3 + 1e-9)
+            fib2_ok = any(abs(ret2 - r) < 0.08 for r in [0.382, 0.5, 0.618])
+            fib4_ok = any(abs(ret4 - r) < 0.08 for r in [0.236, 0.382])
+            fib3_ok = any(abs(wave3/wave1 - r) < 0.15 for r in [1.618, 2.0, 2.618])
+
+            fib_score = sum([fib2_ok, fib4_ok, fib3_ok])
+            conf = min(100, 40 + fib_score * 20)
+
+            # Hedef: Dalga 5 için 1.618x uzantı
+            target = w4 + wave1 * 1.618
+            status = "active" if idxs[-1] >= n - order * 2 else "completed"
+
+            results.append(Formation(
+                name="Elliott 5-Dalga İmpuls (Boğa) ★",
+                category="elliott",
+                confidence=round(conf, 1),
+                status=status,
+                direction="bullish",
+                key_points=[(idxs[j], vals[j], f"W{j}") for j in range(6)],
+                target=round(target, 2),
+                stop=round(w4 * 0.98, 2),
+                description=f"Elliott 5-dalga boğa impuls. "
+                           f"Fibonacci: {fib_score}/3 kural uygun. "
+                           f"W3/W1={wave3/wave1:.2f}. Hedef: {target:.2f}"
+            ))
+
+        elif is_bear:
+            wave1 = w0 - w1
+            wave2 = w2 - w1
+            wave3 = w2 - w3
+            wave4 = w4 - w3
+            wave5 = w4 - w5
+
+            if w2 >= w0:
+                continue
+            if wave3 <= min(wave1, wave5) * 0.9:
+                continue
+            if w4 >= w1:
+                continue
+
+            ret2 = wave2 / (wave1 + 1e-9)
+            ret4 = wave4 / (wave3 + 1e-9)
+            fib2_ok = any(abs(ret2 - r) < 0.08 for r in [0.382, 0.5, 0.618])
+            fib4_ok = any(abs(ret4 - r) < 0.08 for r in [0.236, 0.382])
+            fib3_ok = any(abs(wave3/wave1 - r) < 0.15 for r in [1.618, 2.0, 2.618])
+            fib_score = sum([fib2_ok, fib4_ok, fib3_ok])
+            conf = min(100, 40 + fib_score * 20)
+
+            target = w4 - wave1 * 1.618
+            status = "active" if idxs[-1] >= n - order * 2 else "completed"
+
+            results.append(Formation(
+                name="Elliott 5-Dalga İmpuls (Ayı) ★",
+                category="elliott",
+                confidence=round(conf, 1),
+                status=status,
+                direction="bearish",
+                key_points=[(idxs[j], vals[j], f"W{j}") for j in range(6)],
+                target=round(target, 2),
+                stop=round(w4 * 1.02, 2),
+                description=f"Elliott 5-dalga ayı impuls. "
+                           f"Fibonacci: {fib_score}/3. Hedef: {target:.2f}"
+            ))
+
+    results.sort(key=lambda x: x.confidence, reverse=True)
+    return results[:2]
+
