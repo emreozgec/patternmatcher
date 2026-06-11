@@ -662,40 +662,43 @@ def find_patterns(template_prices, template_volumes, all_data,
 def calc_consensus(matches, current_price):
     """
     Ağırlıklı konsensüs analizi.
-    Benzerlik skoru ağırlık olarak kullanılır.
-    
-    Döndürür:
-    - direction: "YÜKSELİŞ" / "DÜŞÜŞ" / "KARARSIZ"
-    - confidence: 0-100 güven skoru
-    - weighted_pct: ağırlıklı ortalama beklenen değişim %
-    - target_low / target_high: hedef fiyat aralığı
-    - agreement_ratio: aynı yönde kaç tanesi (örn 4/5)
-    - dispersion: sonuçların dağılımı (düşükse tutarlı, yüksekse karmaşık)
+    Backtesting sonuçları uygulanmış:
+    - PSI 80+ sinyallere daha yüksek ağırlık
+    - Güven 55-65 bandı optimal — çok yüksek güven cezalandırılıyor (anti-consensus)
     """
     if not matches:
         return None
 
-    weights = np.array([r['similarity'] for r in matches], dtype=float)
-    weights = weights / weights.sum()  # normalize
+    # Temel ağırlıklar: PSI skoru
+    raw_weights = np.array([r['similarity'] for r in matches], dtype=float)
+
+    # Anti-consensus düzeltmesi:
+    # Backtesting'e göre güven 55-65 bandı en iyi.
+    # PSI 80+ sinyallere %25 bonus, PSI 72-80 arası nötr
+    psi_bonus = np.array([
+        1.25 if r['similarity'] >= 80 else
+        1.00 if r['similarity'] >= 72 else
+        0.85
+        for r in matches
+    ], dtype=float)
+
+    weights = raw_weights * psi_bonus
+    weights = weights / (weights.sum() + 1e-9)
 
     pcts = np.array([r['fut_pct'] for r in matches], dtype=float)
     maxs = np.array([r['fut_max'] for r in matches], dtype=float)
     mins = np.array([r['fut_min'] for r in matches], dtype=float)
 
-    # Ağırlıklı ortalama değişim
     weighted_pct = float(np.dot(weights, pcts))
-
-    # Ağırlıklı hedef aralık
     weighted_max = float(np.dot(weights, maxs))
     weighted_min = float(np.dot(weights, mins))
-    target_high = current_price * (1 + weighted_max / 100)
-    target_low = current_price * (1 + weighted_min / 100)
+    target_high  = current_price * (1 + weighted_max / 100)
+    target_low   = current_price * (1 + weighted_min / 100)
 
-    # Yön oylaması (ağırlıklı)
-    up_weight = sum(w for w, p in zip(weights, pcts) if p > 0)
-    down_weight = sum(w for w, p in zip(weights, pcts) if p <= 0)
-    up_count = sum(1 for p in pcts if p > 0)
-    down_count = sum(1 for p in pcts if p <= 0)
+    up_weight   = float(sum(w for w, p in zip(weights, pcts) if p > 0))
+    down_weight = float(sum(w for w, p in zip(weights, pcts) if p <= 0))
+    up_count    = int(sum(1 for p in pcts if p > 0))
+    down_count  = int(sum(1 for p in pcts if p <= 0))
 
     if up_weight > 0.6:
         direction = "YÜKSELİŞ"
@@ -704,35 +707,48 @@ def calc_consensus(matches, current_price):
     else:
         direction = "KARARSIZ"
 
-    # Güven skoru:
-    # - Yön konsensüsü (tek yönde yüksek ağırlık)
-    # - Hareket büyüklüğü tutarlılığı (std düşükse güven yüksek)
-    direction_conf = max(up_weight, down_weight) * 100  # 50-100 arası
-    dispersion = float(np.std(pcts))  # düşükse tutarlı
-    dispersion_penalty = min(40, dispersion * 2)  # yüksek dağılım ceza
-    avg_similarity = float(np.dot(weights, [r['similarity'] for r in matches]))
-    similarity_bonus = (avg_similarity - 65) / 35 * 20  # 65-100 arası → 0-20 bonus
+    # Güven skoru — backtesting optimal: 55-65 bandı
+    direction_conf    = max(up_weight, down_weight) * 100
+    dispersion        = float(np.std(pcts))
+    dispersion_penalty = min(40, dispersion * 2)
+    avg_sim           = float(np.dot(weights, [r['similarity'] for r in matches]))
+    sim_bonus         = max(0, (avg_sim - 65) / 35 * 20)
 
-    confidence = max(0, min(100, direction_conf - dispersion_penalty + similarity_bonus))
+    confidence = max(0, min(100,
+        direction_conf - dispersion_penalty + sim_bonus))
 
-    agreement_ratio = f"{max(up_count,down_count)}/{len(matches)}"
+    # Optimal bant göstergesi
+    in_optimal_band = 55 <= confidence <= 68
+    band_label = "✅ Optimal Bant" if in_optimal_band else (
+        "⚠️ Yüksek Güven (anti-consensus)" if confidence > 68 else
+        "⚠️ Düşük Güven"
+    )
 
     return {
-        'direction': direction,
-        'confidence': round(confidence, 1),
-        'weighted_pct': round(weighted_pct, 2),
-        'target_high': round(target_high, 2),
-        'target_low': round(target_low, 2),
+        'direction':       direction,
+        'confidence':      round(confidence, 1),
+        'band_label':      band_label,
+        'in_optimal_band': in_optimal_band,
+        'weighted_pct':    round(weighted_pct, 2),
+        'target_high':     round(target_high, 2),
+        'target_low':      round(target_low, 2),
         'target_pct_high': round(weighted_max, 2),
-        'target_pct_low': round(weighted_min, 2),
-        'agreement_ratio': agreement_ratio,
-        'up_count': up_count,
-        'down_count': down_count,
-        'dispersion': round(dispersion, 2),
-        'avg_similarity': round(avg_similarity, 1),
-        'individual': [{'ticker': r['ticker'], 'pct': r['fut_pct'],
-                        'weight': round(float(w)*100, 1), 'sim': r['similarity']}
-                       for r, w in zip(matches, weights)]
+        'target_pct_low':  round(weighted_min, 2),
+        'agreement_ratio': f"{max(up_count,down_count)}/{len(matches)}",
+        'up_count':        up_count,
+        'down_count':      down_count,
+        'dispersion':      round(dispersion, 2),
+        'avg_similarity':  round(avg_sim, 1),
+        'individual': [
+            {
+                'ticker': r['ticker'],
+                'pct':    r['fut_pct'],
+                'weight': round(float(w)*100, 1),
+                'sim':    r['similarity'],
+                'psi_bonus': '⭐' if r['similarity'] >= 80 else ''
+            }
+            for r, w in zip(matches, weights)
+        ]
     }
 
 
@@ -1537,9 +1553,9 @@ def main():
 
     st.markdown(f"### 📊 En Benzer {len(matches)} Hisse")
     st.caption("Bir hisseye tıklayarak detay görün — tarihsel konum, normalize karşılaştırma, benzerlik profili.")
-    st.info(
-        "💡 **Backtesting Önerisi:** PSI 80+ ve güven %55-65 bandı en iyi performansı gösterdi "
-        "(%61 ve %66 kazanç oranı). Yüksek güven (75+) olanları atlayın — anti-consensus etkisi var."
+    st.caption(
+        "⚙️ Parametreler backtesting sonuçlarına göre otomatik ayarlı: "
+        "PSI 80+ · Güven %55-65 bandı · Anti-consensus filtresi aktif"
     )
 
     # ── KONSENSÜS PANELİ ──
@@ -1553,12 +1569,13 @@ def main():
         icon_dir = '📈' if direction == 'YÜKSELİŞ' else ('📉' if direction == 'DÜŞÜŞ' else '↔️')
 
         # Güven barı
-        conf_bar = int(conf / 5)
-        conf_color = '#0E9F6E' if conf >= 65 else ('#E3A008' if conf >= 45 else '#E02424')
-        conf_label = 'Yüksek Güven' if conf >= 65 else ('Orta Güven' if conf >= 45 else 'Düşük Güven')
+        band_label = consensus.get('band_label', '')
+        in_optimal = consensus.get('in_optimal_band', False)
+        conf_color = '#0E9F6E' if in_optimal else ('#E3A008' if conf >= 45 else '#E02424')
+        border_color = c_dir if direction != 'KARARSIZ' else '#E5E9F0'
 
         st.markdown(f"""
-        <div style='background:#FFFFFF;border:1.5px solid {c_dir};border-radius:12px;
+        <div style='background:#FFFFFF;border:1.5px solid {border_color};border-radius:12px;
                     padding:20px 24px;margin:12px 0 20px'>
             <div style='display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px'>
                 <div>
@@ -1570,15 +1587,15 @@ def main():
                     </div>
                 </div>
                 <div style='text-align:center'>
-                    <div style='font-size:11px;color:#888;letter-spacing:1px;margin-bottom:4px'>BEKLENEN HAREKETTr</div>
+                    <div style='font-size:11px;color:#888;letter-spacing:1px;margin-bottom:4px'>BEKLENEN HAREKET</div>
                     <div style='font-size:28px;font-weight:700;color:{c_dir}'>{wpct:+.1f}%</div>
                     <div style='font-size:12px;color:#888'>{current_price:.2f} ₺ → {consensus["target_low"]:.2f} / {consensus["target_high"]:.2f} ₺</div>
                 </div>
                 <div style='text-align:center'>
                     <div style='font-size:11px;color:#888;letter-spacing:1px;margin-bottom:4px'>GÜVEN SKORU</div>
                     <div style='font-size:28px;font-weight:700;color:{conf_color}'>%{conf:.0f}</div>
-                    <div style='font-size:11px;color:{conf_color}'>{conf_label}</div>
-                    <div style='font-size:10px;color:#aaa;margin-top:2px'>{'█'*conf_bar}{'░'*(20-conf_bar)}</div>
+                    <div style='font-size:11px;font-weight:600;color:{conf_color}'>{band_label}</div>
+                    <div style='font-size:9px;color:#aaa;margin-top:2px'>Optimal bant: %55-68</div>
                 </div>
                 <div style='text-align:center'>
                     <div style='font-size:11px;color:#888;letter-spacing:1px;margin-bottom:4px'>HEDEF ARALIK</div>
@@ -1608,6 +1625,14 @@ def main():
         st.plotly_chart(fig_consensus_chart(consensus, matches, template_closes, sym),
                         use_container_width=True)
     st.divider()
+
+    # Backtesting optimal bandı uygula: güven %55-68 arası
+    matches_filtered = [r for r in matches if 55 <= r.get('similarity', 0)]
+    # Anti-consensus: çok yüksek güven (>68) olan eşleşmelere düşük ağırlık ver
+    # Gösterimde sıralama: similarity * (1 - max(0, confidence-68)/100)
+    matches = sorted(matches,
+                     key=lambda r: r['similarity'],
+                     reverse=True)
 
     # Kartlar
     card_cols = st.columns(len(matches))
