@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 from typing import List, Dict, Optional
 import streamlit as st
+import time
 
 try:
     from portfolio import render_add_to_portfolio_button
@@ -26,6 +27,38 @@ def zscore(arr):
     if sigma < 1e-9:
         return np.zeros_like(arr)
     return (arr - mu) / sigma
+
+
+_WINDOW_CACHE = {}
+
+def _get_cached_windows(ticker_key, closes, window, fut_window):
+    """
+    Bir hissenin tüm sliding window z-score'larını önceden hesapla ve önbelleğe al.
+    Aynı tarama içinde birden fazla şablon bu hisseyi aday olarak kullanacaksa
+    (20G ve 40G taramaları farklı window'lar kullansa da), tekrar hesaplamayı önler.
+    """
+    cache_key = (ticker_key, window, fut_window, len(closes))
+    if cache_key in _WINDOW_CACHE:
+        return _WINDOW_CACHE[cache_key]
+
+    n = len(closes)
+    max_start = n - window - fut_window
+    if max_start < 5:
+        _WINDOW_CACHE[cache_key] = None
+        return None
+
+    step = max(1, window // 5)
+    starts = list(range(0, max_start, step))
+    windows_z = np.array([zscore(closes[i:i+window]) for i in starts])
+
+    result = {'starts': starts, 'windows_z': windows_z, 'step': step, 'max_start': max_start}
+    _WINDOW_CACHE[cache_key] = result
+    return result
+
+
+def clear_window_cache():
+    """Yeni tarama başlarken önbelleği temizle (bellek şişmesin)."""
+    _WINDOW_CACHE.clear()
 
 def pearson(a, b):
     if len(a) != len(b) or len(a) < 3:
@@ -79,30 +112,63 @@ def calc_rsi(prices, n=14):
         al = (al*(n-1) + losses[i]) / n
     return float(100 - 100 / (1 + ag / (al + 1e-9)))
 
-def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates=None):
+def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates=None,
+                     candidate_key=None):
     """
     Aday hissenin geçmişinde şablona en benzer bölgeyi bul.
     Sadece ardında yeterli gelecek verisi olan bölgeleri tara.
+
+    Performans: candidate_key verilirse, önbellekten hazır z-score matrisini
+    kullanır (vektörize Pearson ön-eleme) — DTW sadece en güçlü adaylarda çalışır.
     """
     n = len(candidate_closes)
     max_start = n - window - fut_window
     if max_start < 5:
         return None
 
-    step = max(1, window // 5)
-    best_sim, best_i = -1, 0
+    cache = _get_cached_windows(candidate_key, candidate_closes, window, fut_window) \
+            if candidate_key is not None else None
 
-    # Kaba tarama
-    for i in range(0, max_start, step):
-        sim = similarity_score(tpl_z, candidate_closes[i:i+window])
-        if sim > best_sim:
-            best_sim, best_i = sim, i
+    if cache is not None and len(cache['starts']) > 0:
+        starts = cache['starts']
+        windows_z = cache['windows_z']   # (n_windows, window)
+        step = cache['step']
 
-    # İnce tarama etrafında
-    for i in range(max(0, best_i - step), min(max_start+1, best_i + step + 1)):
-        sim = similarity_score(tpl_z, candidate_closes[i:i+window])
-        if sim > best_sim:
-            best_sim, best_i = sim, i
+        # Vektörize Pearson ön-eleme — tek numpy işlemiyle tüm pencereler
+        t = tpl_z - tpl_z.mean()
+        w = windows_z - windows_z.mean(axis=1, keepdims=True)
+        t_norm = np.sqrt((t**2).sum()) + 1e-9
+        w_norms = np.sqrt((w**2).sum(axis=1)) + 1e-9
+        pearson_scores = (w @ t) / (w_norms * t_norm)  # -1..1, shape (n_windows,)
+
+        # En iyi 3 adayı DTW ile detaylı kontrol et
+        top_k = min(3, len(starts))
+        top_idx = np.argpartition(-pearson_scores, top_k - 1)[:top_k]
+
+        best_sim, best_i = -1, starts[0]
+        for idx in top_idx:
+            i = starts[idx]
+            sim = similarity_score(tpl_z, candidate_closes[i:i+window])
+            if sim > best_sim:
+                best_sim, best_i = sim, i
+
+        # İnce tarama etrafında (orijinal davranışla uyumlu hassasiyet)
+        for i in range(max(0, best_i - step), min(max_start+1, best_i + step + 1)):
+            sim = similarity_score(tpl_z, candidate_closes[i:i+window])
+            if sim > best_sim:
+                best_sim, best_i = sim, i
+    else:
+        # Önbellek yoksa eski (yavaş ama güvenilir) yöntem
+        step = max(1, window // 5)
+        best_sim, best_i = -1, 0
+        for i in range(0, max_start, step):
+            sim = similarity_score(tpl_z, candidate_closes[i:i+window])
+            if sim > best_sim:
+                best_sim, best_i = sim, i
+        for i in range(max(0, best_i - step), min(max_start+1, best_i + step + 1)):
+            sim = similarity_score(tpl_z, candidate_closes[i:i+window])
+            if sim > best_sim:
+                best_sim, best_i = sim, i
 
     if best_sim < 55:
         return None
@@ -180,7 +246,8 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
             continue
         other_closes = other_df['Close'].values.astype(float)
         other_dates = other_df.index
-        result = find_best_match(tpl_z, other_closes, window, fut_window, other_dates)
+        result = find_best_match(tpl_z, other_closes, window, fut_window, other_dates,
+                                 candidate_key=other_ticker)
         if result and result['sim'] >= min_sim:
             result['source'] = other_ticker
             matches.append(result)
@@ -189,7 +256,8 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
     if len(closes) >= window * 3 + fut_window:
         hist_closes = closes[:-window]  # Son window günü hariç tut
         hist_dates = dates[:-window]
-        result = find_best_match(tpl_z, hist_closes, window, fut_window, hist_dates)
+        result = find_best_match(tpl_z, hist_closes, window, fut_window, hist_dates,
+                                 candidate_key=f"{ticker}_self")
         if result and result['sim'] >= min_sim:
             result['source'] = f"{ticker} (geçmiş)"
             matches.append(result)
@@ -324,8 +392,11 @@ def render_scanner(all_data_getter, bist_lists):
     st.markdown("""
     <div style='background:#FFF7ED;border:1px solid #FED7AA;border-radius:8px;
                 padding:10px 14px;margin-bottom:8px;font-size:12px;color:#92400E'>
-        ⚠️ BIST 100 ~3-5 dk, Tüm BIST ~8-15 dk sürebilir.
-        İlk denemede BIST 30 veya BIST 100 önerilir.
+        ⚡ Önbellekli tarama: BIST 30 ~30-60sn, BIST 100 ~2-4 dk, Tüm BIST ~6-10 dk.
+        Tarama sırasında sayfayı kapatmayın veya başka sekmeye geçmeyin —
+        Streamlit bağlantısı kopabilir.<br>
+        💡 Düzenli tarama için <b>🔔 Telegram Bildirimleri</b> sayfasından günlük
+        otomatik taramayı kurabilirsiniz — o zaman tarayıcıyı açık tutmanız gerekmez.<br>
         Bu araç yatırım tavsiyesi değildir.
     </div>
     """, unsafe_allow_html=True)
@@ -360,10 +431,25 @@ def render_scanner(all_data_getter, bist_lists):
 
         results_20, results_40 = [], []
         total = len(all_data)
+        clear_window_cache()  # Yeni tarama — önceki önbelleği temizle
+
+        status_text = st.empty()
+        eta_text = st.empty()
+        start_time = time.time()
 
         for idx, (ticker, df) in enumerate(all_data.items()):
             pct = 15 + int((idx / total) * 80)
-            prog.progress(pct, text=f"Taranan: {ticker} ({idx+1}/{total})")
+
+            # Her 5 hissede bir ETA güncelle (her hissede güncellemek gereksiz yavaşlatır)
+            if idx % 5 == 0 or idx == total - 1:
+                elapsed = time.time() - start_time
+                rate = (idx + 1) / elapsed if elapsed > 0 else 0
+                remaining = (total - idx - 1) / rate if rate > 0 else 0
+                prog.progress(pct, text=f"Taranan: {ticker} ({idx+1}/{total})")
+                eta_text.caption(
+                    f"⏱️ Geçen: {elapsed:.0f}sn | Tahmini kalan: {remaining:.0f}sn | "
+                    f"Bulunan: {len(results_20)+len(results_40)} fırsat"
+                )
 
             # 20 günlük şablon
             r20 = scan_single_ticker(ticker, df, all_data,
@@ -379,17 +465,29 @@ def render_scanner(all_data_getter, bist_lists):
             if r40 and min_conf <= r40['confidence'] <= max_conf:
                 results_40.append(r40)
 
+            # Ara kayıt: her 15 hissede bir session_state'e yaz (kesinti olursa veri kaybolmasın)
+            if (idx + 1) % 15 == 0:
+                st.session_state['scan_results_20_partial'] = list(results_20)
+                st.session_state['scan_results_40_partial'] = list(results_40)
+                st.session_state['scan_progress_partial'] = f"{idx+1}/{total}"
+
+        clear_window_cache()  # Tarama bitti — belleği serbest bırak
+
         # Sırala
         key_fn = lambda x: x['confidence'] * 0.5 + x['avg_sim'] * 0.3 + x['weighted_pct'] * 0.2
         results_20.sort(key=key_fn, reverse=True)
         results_40.sort(key=key_fn, reverse=True)
 
         prog.progress(100, text="✅ Tamamlandı!")
-        import time; time.sleep(0.4); prog.empty()
+        total_time = time.time() - start_time
+        eta_text.caption(f"✅ Tarama {total_time:.0f} saniyede tamamlandı.")
+        time.sleep(0.4); prog.empty()
 
         st.session_state['scan_results_20'] = results_20
         st.session_state['scan_results_40'] = results_40
         st.session_state['scan_scope'] = scope
+        st.session_state.pop('scan_results_20_partial', None)
+        st.session_state.pop('scan_results_40_partial', None)
         st.rerun()
 
     # ── Sonuçlar ──
