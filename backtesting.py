@@ -221,11 +221,19 @@ def generate_historical_signals(
             if confidence < min_confidence or weighted_pct <= 0:
                 continue
 
+            # Sinyalin kendi PSI skoru da eşiği karşılamalı (önceki sürümde
+            # sadece bireysel aday eşleşmeler gevşek filtreleniyordu, asıl
+            # sinyal skoru hiç kontrol edilmiyordu — bu yüzden PSI eşiği
+            # sonuçları etkilemiyordu)
+            final_signal_score = float(np.dot(weights, sims_arr))
+            if final_signal_score < min_psi:
+                continue
+
             signals.append(Signal(
                 ticker       = ticker,
                 entry_date   = dates[i],
                 entry_price  = float(closes[i]),
-                signal_score = round(float(np.dot(weights, sims_arr)), 1),
+                signal_score = round(final_signal_score, 1),
                 confidence   = round(confidence, 1),
                 expected_pct = round(weighted_pct, 2),
                 window       = window,
