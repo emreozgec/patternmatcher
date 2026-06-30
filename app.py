@@ -915,6 +915,7 @@ def fig_formation_chart(df, symbol, formations):
         'elliott': '#9061F9',
         'harmonik': '#E02424',
         'wyckoff': '#1A56DB',
+        'psi_consensus': '#0D9488',
     }
 
     dir_colors = {
@@ -1595,7 +1596,7 @@ def main():
                 use_container_width=True)
 
             # Formasyon listesi
-            cat_icons = {'klasik':'📊','trend':'📐','elliott':'🌊','harmonik':'🎯','wyckoff':'🏗️'}
+            cat_icons = {'klasik':'📊','trend':'📐','elliott':'🌊','harmonik':'🎯','wyckoff':'🏗️','psi_consensus':'⭐'}
             dir_colors_html = {'bullish':'#0E9F6E','bearish':'#E02424','neutral':'#888'}
             for f in seg_formations:
                 icon = cat_icons.get(f.category, '📌')

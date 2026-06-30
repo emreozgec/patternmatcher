@@ -438,15 +438,17 @@ def render_scanner(all_data_getter, bist_lists):
             rows = []
             for r in results:
                 fmt_str = ' / '.join(r['formations'][:2]) if r['formations'] else '—'
+                top_m = r['top_matches'][0] if r.get('top_matches') else None
+                top_m_str = f"{top_m['source']} (%{top_m['sim']:.0f})" if top_m else "—"
                 rows.append({
                     '🏢 Hisse':      r['ticker'],
+                    '🔗 En Benzediği': top_m_str,
                     '💰 Fiyat':      f"{r['current_price']:.2f} ₺",
                     '📊 Son {wlabel}': f"{r['tpl_change']:+.1f}%",
                     'RSI':           f"{r['tpl_rsi']:.0f}",
                     '🎯 Hedef':      f"{r['target']:.2f} ₺",
                     '📈 Beklenen':   f"+{r['weighted_pct']:.1f}%",
                     '🔒 Güven':      f"%{r['confidence']:.0f}",
-                    '🔗 Benzerlik':  f"{r['avg_sim']:.0f}",
                     '✅ Oy':         f"{r['up_count']}/{r['total_matches']}",
                     '🔷 Formasyon':  fmt_str,
                 })
@@ -473,14 +475,20 @@ def render_scanner(all_data_getter, bist_lists):
                             for f in r['formations'][:2]
                         ) or "<span style='font-size:10px;color:#aaa'>—</span>"
 
-                        # Top 3 eşleşme
-                        match_lines = ""
-                        for m in r['top_matches'][:3]:
+                        # En güçlü eşleşme — kart üstünde büyük gösterilecek
+                        top_match = r['top_matches'][0] if r.get('top_matches') else None
+
+                        # Diğer eşleşmeler (top_match hariç)
+                        other_matches = r['top_matches'][1:3] if r.get('top_matches') and len(r['top_matches']) > 1 else []
+                        other_match_lines = ""
+                        for m in other_matches:
                             m_color = '#0E9F6E' if m['fut_pct'] > 0 else '#E02424'
-                            match_lines += (
+                            date_label = m.get('match_date_label', '')
+                            other_match_lines += (
                                 f"<div style='display:flex;justify-content:space-between;"
-                                f"font-size:10px;padding:1px 0'>"
-                                f"<span style='color:#555'>{m['source']}</span>"
+                                f"font-size:10px;padding:2px 0'>"
+                                f"<span style='color:#555'>{m['source']}"
+                                f"{f' ({date_label})' if date_label else ''}</span>"
                                 f"<span style='color:#888'>%{m['sim']:.0f}</span>"
                                 f"<span style='color:{m_color};font-weight:600'>"
                                 f"{m['fut_pct']:+.1f}%</span></div>"
@@ -507,6 +515,35 @@ def render_scanner(all_data_getter, bist_lists):
                                 f"📅 {r['unique_periods']} farklı dönem</span>"
                             )
 
+                        # En güçlü eşleşme bloğu — kartın en görünür yeri
+                        if top_match:
+                            tm_color = '#0E9F6E' if top_match['fut_pct'] > 0 else '#E02424'
+                            tm_icon = '📈' if top_match['fut_pct'] > 0 else '📉'
+                            tm_date = top_match.get('match_date_label', '')
+                            top_match_html = f"""
+                            <div style='background:linear-gradient(135deg,#F0F7FF,#FFFFFF);
+                                        border:1px solid #BFDBFE;border-radius:8px;
+                                        padding:8px 10px;margin:8px 0'>
+                                <div style='font-size:9px;color:#1A56DB;letter-spacing:0.5px;
+                                            margin-bottom:3px'>🔗 EN ÇOK BENZEDİĞİ HİSSE</div>
+                                <div style='display:flex;justify-content:space-between;align-items:center'>
+                                    <div style='font-size:16px;font-weight:800;color:#1A1A2E'>
+                                        {top_match['source']}
+                                        {f"<span style='font-size:10px;color:#888;font-weight:400'> · {tm_date}</span>" if tm_date else ""}
+                                    </div>
+                                    <div style='font-size:14px;font-weight:700;color:#1A56DB'>
+                                        %{top_match['sim']:.0f}
+                                    </div>
+                                </div>
+                                <div style='font-size:11px;color:#555;margin-top:2px'>
+                                    O dönemden sonra: <b style='color:{tm_color}'>
+                                    {tm_icon} {top_match['fut_pct']:+.1f}%</b> hareket etti
+                                </div>
+                            </div>
+                            """
+                        else:
+                            top_match_html = ""
+
                         st.markdown(f"""
                         <div style='background:#FFFFFF;border:1.5px solid #E5E9F0;
                                     border-radius:10px;padding:14px 12px;margin-bottom:8px'>
@@ -524,6 +561,8 @@ def render_scanner(all_data_getter, bist_lists):
                             </div>
 
                             <div style='margin:6px 0'>{badges_html}</div>
+
+                            {top_match_html}
 
                             <div style='display:flex;justify-content:space-between;
                                         margin:10px 0;gap:4px'>
@@ -550,13 +589,13 @@ def render_scanner(all_data_getter, bist_lists):
                                 </div>
                             </div>
 
-                            <div style='background:#F9FAFB;border-radius:6px;
+                            {f'''<div style='background:#F9FAFB;border-radius:6px;
                                         padding:6px 8px;margin:6px 0'>
                                 <div style='font-size:9px;color:#888;margin-bottom:3px'>
-                                    BENZER DÖNEMLER VE SONRASI
+                                    DİĞER BENZER DÖNEMLER
                                 </div>
-                                {match_lines}
-                            </div>
+                                {other_match_lines}
+                            </div>''' if other_match_lines else ""}
 
                             <div style='font-family:monospace;font-size:10px;color:{c_col}'>
                                 {'█'*conf_bar}{'░'*(20-conf_bar)} %{conf:.0f}

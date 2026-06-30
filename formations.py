@@ -1011,6 +1011,11 @@ def scan_all_formations(prices: np.ndarray, volumes: np.ndarray,
     Tüm formasyon kategorilerini tara.
     min_confidence altındaki formasyonları filtrele.
     Güven skoruna göre sırala.
+
+    İki geçişli çalışır:
+    1. Geçiş: tüm bireysel formasyon dedektörleri (klasik, trend, elliott, ...)
+    2. Geçiş: 1. geçişteki sonuçlara bakarak BIST-PSI Konsensüs Formasyonu
+       hesaplanır (birden fazla bağımsız formasyon aynı yöne işaret ediyorsa)
     """
     all_formations: List[Formation] = []
 
@@ -1020,6 +1025,7 @@ def scan_all_formations(prices: np.ndarray, volumes: np.ndarray,
         lambda p, v: detect_head_and_shoulders(p, v),
         lambda p, v: detect_double_triple(p),
         lambda p, v: detect_rectangle(p),
+        lambda p, v: detect_v_reversal(p, v),
         # Yeni formasyonlar
         lambda p, v: detect_rounding_bottom(p),
         lambda p, v: detect_island_reversal(p, v),
@@ -1046,6 +1052,16 @@ def scan_all_formations(prices: np.ndarray, volumes: np.ndarray,
             all_formations.extend(found)
         except Exception:
             pass
+
+    # ── 2. Geçiş: BIST-PSI Konsensüs Formasyonu ──
+    # 1. geçişteki sonuçlara bakarak hesaplanır, sonra ana listeye eklenir
+    try:
+        consensus_formations = detect_psi_consensus_formation(
+            prices, volumes, all_formations
+        )
+        all_formations.extend(consensus_formations)
+    except Exception:
+        pass
 
     # Filtrele ve sırala
     filtered = [f for f in all_formations if f.confidence >= min_confidence]
@@ -1877,4 +1893,243 @@ def detect_elliott_improved(prices: np.ndarray) -> List[Formation]:
 
     results.sort(key=lambda x: x.confidence, reverse=True)
     return results[:2]
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 8. ÖZEL FORMASYONLAR (Kullanıcı talebiyle eklendi)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def detect_v_reversal(prices: np.ndarray, volumes: np.ndarray) -> List[Formation]:
+    """
+    V-Top / V-Bottom (Sert Dönüş)
+
+    Rounding Bottom'ın tam tersi — yavaş yuvarlanma değil, ANİ ve KESKİN dönüş.
+    Genellikle haber/şok kaynaklı veya kapitülasyon sonrası oluşur.
+
+    Karakteristik özellikler:
+    - Dönüş noktasına kadar tek yönlü, hızlı hareket (dik açı)
+    - Dönüş noktasında ÇOK az gün sürer (1-3 gün), yuvarlanma yok
+    - Dönüş sonrası ters yönde benzer hızda hareket
+    - Genellikle yüksek hacimle desteklenir (panik/coşku hacmi)
+    - Sol ve sağ kanat açıları birbirine yakın (simetrik şok)
+
+    V-Bottom: bullish (sert düşüş + sert toparlanma)
+    V-Top: bearish (sert yükseliş + sert çöküş)
+    """
+    prices = np.array(prices, dtype=float)
+    volumes = np.array(volumes, dtype=float) if volumes is not None else np.ones(len(prices))
+    n = len(prices)
+    if n < 12:
+        return []
+
+    results = []
+
+    # Dönüş noktasını ara: en keskin tek-gün/birkaç-gün dönüşü bul
+    # "Keskinlik" = etrafındaki pencerede en düşük/yüksek nokta olup
+    # solundaki ve sağındaki eğimlerin her ikisinin de dik olması
+    search_start = max(3, n // 6)
+    search_end = n - max(3, n // 6)
+
+    best_v_score = 0.0
+    best_idx = None
+    best_is_bottom = True
+
+    for i in range(search_start, search_end):
+        # Sol pencere: i'den geriye doğru en az 3, en fazla n//3 gün
+        left_window = min(i, n // 3)
+        right_window = min(n - i - 1, n // 3)
+        if left_window < 3 or right_window < 3:
+            continue
+
+        left_seg = prices[i - left_window:i + 1]
+        right_seg = prices[i:i + right_window + 1]
+
+        # Dip mi tepe mi kontrolü
+        is_bottom = prices[i] == min(left_seg.min(), right_seg.min())
+        is_top = prices[i] == max(left_seg.max(), right_seg.max())
+
+        if not (is_bottom or is_top):
+            continue
+
+        # Sol ve sağ eğim büyüklüğü (mutlak, normalize)
+        left_slope = abs(left_seg[0] - left_seg[-1]) / (left_window + 1e-9) / (prices.mean() + 1e-9)
+        right_slope = abs(right_seg[-1] - right_seg[0]) / (right_window + 1e-9) / (prices.mean() + 1e-9)
+
+        # Dönüşün "keskinliği": ortalama eğimin yüksekliği + sol/sağ simetri
+        avg_slope = (left_slope + right_slope) / 2
+        symmetry = 1 - abs(left_slope - right_slope) / (avg_slope + 1e-9)
+        symmetry = max(0.0, min(1.0, symmetry))
+
+        # Dönüş bölgesinin darlığı: dip/tepe etrafında kaç gün "yatay" kalmış
+        # V formasyonu için bu çok kısa olmalı (yuvarlanma yoksa V'dir)
+        flat_zone = 0
+        ref_price = prices[i]
+        tol = abs(ref_price) * 0.01 + 1e-9
+        for offset in range(1, min(5, left_window, right_window) + 1):
+            if (abs(prices[i - offset] - ref_price) < tol * (offset + 1) or
+                abs(prices[i + offset] - ref_price) < tol * (offset + 1)):
+                flat_zone += 1
+        sharpness = max(0.0, 1.0 - flat_zone / 5.0)
+
+        v_score = avg_slope * 300 * symmetry * sharpness  # ölçek normalize
+        v_score = min(1.0, v_score)
+
+        if v_score > best_v_score:
+            best_v_score = v_score
+            best_idx = i
+            best_is_bottom = is_bottom
+
+    if best_idx is None or best_v_score < 0.25:
+        return []
+
+    i = best_idx
+    left_window = min(i, n // 3)
+    right_window = min(n - i - 1, n // 3)
+
+    # Hacim onayı: dönüş noktası civarında hacim artışı var mı?
+    vol_confirm = 1.0
+    if len(volumes) == n:
+        around_vol = volumes[max(0, i-2):min(n, i+3)].mean()
+        base_vol = volumes.mean()
+        if around_vol > base_vol * 1.3:
+            vol_confirm = 1.2
+
+    conf = min(100, best_v_score * 70 * vol_confirm + 15)
+
+    start_idx = i - left_window
+    end_idx = min(n - 1, i + right_window)
+
+    if best_is_bottom:
+        depth = max(prices[start_idx], prices[end_idx]) - prices[i]
+        target = prices[end_idx] + depth
+        results.append(Formation(
+            name="V-Bottom (Sert Dönüş)",
+            category="klasik",
+            confidence=round(conf, 1),
+            status="active" if end_idx >= n - 3 else "completed",
+            direction="bullish",
+            key_points=[
+                (start_idx, float(prices[start_idx]), "Düşüş Başı"),
+                (i, float(prices[i]), "V Dip"),
+                (end_idx, float(prices[end_idx]), "Toparlanma")
+            ],
+            target=round(target, 2),
+            stop=round(prices[i] * 0.97, 2),
+            description=f"Keskin V dönüşü — ani panik satış + hızlı toparlanma. "
+                       f"Simetri ve dikilik skoru yüksek. Hedef: {target:.2f}"
+        ))
+    else:
+        height = prices[i] - min(prices[start_idx], prices[end_idx])
+        target = prices[end_idx] - height
+        results.append(Formation(
+            name="V-Top (Sert Dönüş)",
+            category="klasik",
+            confidence=round(conf, 1),
+            status="active" if end_idx >= n - 3 else "completed",
+            direction="bearish",
+            key_points=[
+                (start_idx, float(prices[start_idx]), "Yükseliş Başı"),
+                (i, float(prices[i]), "V Tepe"),
+                (end_idx, float(prices[end_idx]), "Çöküş")
+            ],
+            target=round(target, 2),
+            stop=round(prices[i] * 1.03, 2),
+            description=f"Keskin V tepe dönüşü — ani coşku + hızlı çöküş. "
+                       f"Hedef: {target:.2f}"
+        ))
+
+    return results
+
+
+def detect_psi_consensus_formation(prices: np.ndarray, volumes: np.ndarray,
+                                    detected_formations: List[Formation] = None) -> List[Formation]:
+    """
+    BIST-PSI Konsensüs Formasyonu (Bize özgü, üst-düzey formasyon)
+
+    Klasik formasyonlar fiyat ŞEKLİNE bakar. Bu formasyon ise DİĞER TÜM
+    formasyonların birbiriyle ne kadar UZLAŞTIĞINA bakar.
+
+    Mantık: Eğer aynı fiyat serisi üzerinde birden fazla BAĞIMSIZ formasyon
+    aynı yöne (bullish/bearish) işaret ediyorsa, bu tek bir formasyonun
+    yanlış pozitif olma ihtimalinden çok daha güçlü bir sinyaldir.
+
+    Örnek: Aynı anda hem "Falling Wedge" (bullish) hem "Inverse H&S" (bullish)
+    hem de "Wyckoff Accumulation" (bullish) tespit edilmişse, bunların kesişimi
+    PSI Konsensüs Formasyonu olarak raporlanır — güven skoru bireysel
+    formasyonların toplamından daha yüksek olabilir (çapraz doğrulama).
+
+    Skor hesabı:
+    - Kaç bağımsız formasyon aynı yönde? (n_agree)
+    - Bu formasyonların ortalama güveni ne? (avg_conf)
+    - Kategorik çeşitlilik var mı? (örn. hem klasik hem Elliott hem Wyckoff
+      aynı yöndeyse, bu sadece 3 klasik formasyonun aynı yönde olmasından
+      daha güçlü bir kanıttır — farklı analiz okulları aynı sonuca varmış)
+    """
+    if not detected_formations or len(detected_formations) < 2:
+        return []
+
+    prices = np.array(prices, dtype=float)
+    n = len(prices)
+
+    bullish_fs = [f for f in detected_formations if f.direction == 'bullish']
+    bearish_fs = [f for f in detected_formations if f.direction == 'bearish']
+
+    results = []
+
+    for direction_label, group in [('bullish', bullish_fs), ('bearish', bearish_fs)]:
+        if len(group) < 2:
+            continue
+
+        n_agree = len(group)
+        avg_conf = float(np.mean([f.confidence for f in group]))
+        categories = set(f.category for f in group)
+        n_categories = len(categories)
+
+        # Kategori çeşitliliği bonusu: farklı analiz okullarının uzlaşması
+        # daha değerli (örn. klasik + elliott + wyckoff > 3x klasik)
+        category_bonus = min(25, (n_categories - 1) * 12)
+
+        # Sayı bonusu: kaç formasyon aynı yönde uzlaştı
+        count_bonus = min(30, (n_agree - 2) * 8) if n_agree > 2 else 0
+
+        # Taban skor: katılan formasyonların ortalama güveni
+        base_score = avg_conf * 0.6
+
+        conf = min(100, base_score + category_bonus + count_bonus + 15)
+
+        if conf < 55:
+            continue
+
+        # En güvenilir formasyonun hedefini referans al (varsa)
+        targets = [f.target for f in group if f.target is not None]
+        stops = [f.stop for f in group if f.stop is not None]
+        consensus_target = float(np.median(targets)) if targets else None
+        consensus_stop = float(np.median(stops)) if stops else None
+
+        names_list = sorted(set(
+            f.name.replace(" (Geliştirilmiş)", "").replace(" ★", "") for f in group
+        ))
+
+        # Key points: en güvenilir formasyonun key point'lerini kullan
+        best_f = max(group, key=lambda f: f.confidence)
+
+        results.append(Formation(
+            name=f"BIST-PSI Konsensüs ({'Boğa' if direction_label=='bullish' else 'Ayı'})",
+            category="psi_consensus",
+            confidence=round(conf, 1),
+            status="active",
+            direction=direction_label,
+            key_points=best_f.key_points,
+            target=round(consensus_target, 2) if consensus_target else None,
+            stop=round(consensus_stop, 2) if consensus_stop else None,
+            description=(
+                f"{n_agree} bağımsız formasyon ({n_categories} farklı kategori) "
+                f"aynı yönde uzlaştı: {', '.join(names_list[:4])}"
+                f"{'...' if len(names_list) > 4 else ''}. "
+                f"Çapraz doğrulama nedeniyle güven skoru yükseltildi."
+            )
+        ))
+
+    return results
 
