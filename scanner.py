@@ -13,6 +13,11 @@ import pandas as pd
 from typing import List, Dict, Optional
 import streamlit as st
 
+try:
+    from portfolio import render_add_to_portfolio_button
+except Exception:
+    render_add_to_portfolio_button = None
+
 # ── Yardımcı fonksiyonlar ──────────────────────────────────────────────────────
 
 def zscore(arr):
@@ -74,7 +79,7 @@ def calc_rsi(prices, n=14):
         al = (al*(n-1) + losses[i]) / n
     return float(100 - 100 / (1 + ag / (al + 1e-9)))
 
-def find_best_match(tpl_z, candidate_closes, window, fut_window):
+def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates=None):
     """
     Aday hissenin geçmişinde şablona en benzer bölgeyi bul.
     Sadece ardında yeterli gelecek verisi olan bölgeleri tara.
@@ -112,6 +117,13 @@ def find_best_match(tpl_z, candidate_closes, window, fut_window):
     fut_max = (future_closes.max() - future_closes[0]) / (future_closes[0] + 1e-9) * 100
     fut_min = (future_closes.min() - future_closes[0]) / (future_closes[0] + 1e-9) * 100
 
+    match_date_label = None
+    if candidate_dates is not None and best_i < len(candidate_dates):
+        try:
+            match_date_label = candidate_dates[best_i].strftime('%m.%Y')
+        except Exception:
+            match_date_label = None
+
     return {
         'sim': round(best_sim, 1),
         'fut_pct': round(fut_pct, 2),
@@ -119,18 +131,23 @@ def find_best_match(tpl_z, candidate_closes, window, fut_window):
         'fut_min': round(fut_min, 2),
         'match_closes': match_closes,
         'future_closes': future_closes,
+        'match_start_idx': best_i,
+        'match_date_label': match_date_label,
     }
 
 
-def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60):
+def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
+                       index_closes=None):
     """
     Tek hisse için fırsat analizi:
     - Son `window` günü şablon al
     - Diğer hisselerin geçmişinde benzer dönemleri bul
     - Konsensüs hesapla
+    - Endeks korelasyonu kontrol et (genel piyasa hareketi mi?)
     """
     closes = df['Close'].values.astype(float)
     volumes = df['Volume'].values.astype(float)
+    dates = df.index
 
     if len(closes) < window + 10:
         return None
@@ -145,13 +162,25 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60):
     tpl_rsi = calc_rsi(tpl_prices)
     current_price = float(closes[-1])
 
+    # Endeks korelasyon kontrolü — genel piyasa hareketi mi?
+    index_corr = None
+    if index_closes is not None and len(index_closes) >= window:
+        idx_tpl = index_closes[-window:]
+        min_len = min(len(tpl_prices), len(idx_tpl))
+        stock_rets = daily_returns(tpl_prices[-min_len:])
+        idx_rets = daily_returns(idx_tpl[-min_len:])
+        m = min(len(stock_rets), len(idx_rets))
+        if m >= 4 and np.std(stock_rets[-m:]) > 1e-9 and np.std(idx_rets[-m:]) > 1e-9:
+            index_corr = float(np.corrcoef(stock_rets[-m:], idx_rets[-m:])[0, 1])
+
     # Diğer hisselerde benzer dönem ara
     matches = []
     for other_ticker, other_df in all_data.items():
         if other_ticker == ticker:
             continue
         other_closes = other_df['Close'].values.astype(float)
-        result = find_best_match(tpl_z, other_closes, window, fut_window)
+        other_dates = other_df.index
+        result = find_best_match(tpl_z, other_closes, window, fut_window, other_dates)
         if result and result['sim'] >= min_sim:
             result['source'] = other_ticker
             matches.append(result)
@@ -159,13 +188,35 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60):
     # Bu hissenin kendi geçmişinde de ara (son window gün hariç)
     if len(closes) >= window * 3 + fut_window:
         hist_closes = closes[:-window]  # Son window günü hariç tut
-        result = find_best_match(tpl_z, hist_closes, window, fut_window)
+        hist_dates = dates[:-window]
+        result = find_best_match(tpl_z, hist_closes, window, fut_window, hist_dates)
         if result and result['sim'] >= min_sim:
             result['source'] = f"{ticker} (geçmiş)"
             matches.append(result)
 
     if len(matches) < 2:
         return None
+
+    # ── Tarih Çeşitliliği Filtresi ──────────────────────────────────────────
+    # Aynı döneme yığılan eşleşmeleri sınırla (genel piyasa hareketi sinyali)
+    unique_periods = len(set(m.get('match_date_label') for m in matches
+                              if m.get('match_date_label')))
+    if len(matches) >= 4:
+        from collections import defaultdict
+        clusters = defaultdict(list)
+        for m in matches:
+            key = m.get('match_date_label') or 'unknown'
+            clusters[key].append(m)
+        max_per_cluster = max(1, len(matches) // 3)
+        diversified = []
+        taken = {k: 0 for k in clusters}
+        for m in sorted(matches, key=lambda x: x['sim'], reverse=True):
+            key = m.get('match_date_label') or 'unknown'
+            if taken[key] < max_per_cluster:
+                diversified.append(m)
+                taken[key] += 1
+        if len(diversified) >= 2:
+            matches = diversified
 
     # Ağırlıklı konsensüs
     sims = np.array([m['sim'] for m in matches], dtype=float)
@@ -192,6 +243,12 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60):
     match_bonus = min(10, (len(matches) - 2) * 2)
     confidence = max(0, min(100,
         direction_conf - disp_penalty + sim_bonus + match_bonus))
+
+    # Endeks korelasyonu çok yüksekse güven cezalandırılır
+    index_penalty_applied = False
+    if index_corr is not None and index_corr > 0.75:
+        confidence = max(0, confidence - 20)
+        index_penalty_applied = True
 
     if confidence < 45:
         return None
@@ -229,9 +286,12 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60):
         'avg_sim': round(avg_sim, 1),
         'up_count': up_count,
         'total_matches': len(matches),
+        'unique_periods': unique_periods,
         'dispersion': round(dispersion, 2),
         'regime': regime_label,
         'formations': formations,
+        'index_corr': round(index_corr, 2) if index_corr is not None else None,
+        'index_penalty_applied': index_penalty_applied,
         'top_matches': sorted(matches, key=lambda x: x['sim'], reverse=True)[:3],
     }
 
@@ -281,7 +341,23 @@ def render_scanner(all_data_getter, bist_lists):
         prog = st.progress(0, text="Veriler yükleniyor...")
         with st.spinner(""):
             all_data = all_data_getter(tickers, period="2y")
-        prog.progress(15, text=f"{len(all_data)} hisse yüklendi. Tarama başlıyor...")
+        prog.progress(10, text=f"{len(all_data)} hisse yüklendi. Endeks verisi alınıyor...")
+
+        # BIST100 endeks verisi — genel piyasa hareketi filtresi için
+        index_closes = None
+        try:
+            import yfinance as yf
+            xu100_raw = yf.download("XU100.IS", period="2y",
+                                    auto_adjust=True, progress=False, threads=False)
+            if xu100_raw is not None and not xu100_raw.empty:
+                import pandas as pd
+                if isinstance(xu100_raw.columns, pd.MultiIndex):
+                    xu100_raw.columns = xu100_raw.columns.get_level_values(0)
+                index_closes = xu100_raw['Close'].values.astype(float)
+        except Exception:
+            index_closes = None
+
+        prog.progress(15, text="Tarama başlıyor...")
 
         results_20, results_40 = [], []
         total = len(all_data)
@@ -293,14 +369,14 @@ def render_scanner(all_data_getter, bist_lists):
             # 20 günlük şablon
             r20 = scan_single_ticker(ticker, df, all_data,
                                      window=20, fut_window=30,
-                                     min_sim=min_sim)
+                                     min_sim=min_sim, index_closes=index_closes)
             if r20 and min_conf <= r20['confidence'] <= max_conf:
                 results_20.append(r20)
 
             # 40 günlük şablon
             r40 = scan_single_ticker(ticker, df, all_data,
                                      window=40, fut_window=60,
-                                     min_sim=min_sim)
+                                     min_sim=min_sim, index_closes=index_closes)
             if r40 and min_conf <= r40['confidence'] <= max_conf:
                 results_40.append(r40)
 
@@ -410,6 +486,27 @@ def render_scanner(all_data_getter, bist_lists):
                                 f"{m['fut_pct']:+.1f}%</span></div>"
                             )
 
+                        # Endeks korelasyonu ve dönem çeşitliliği rozetleri
+                        badges_html = ""
+                        if r.get('index_penalty_applied'):
+                            badges_html += (
+                                "<span style='background:#FEF2F2;color:#E02424;"
+                                "font-size:9px;padding:1px 6px;border-radius:3px;margin-right:4px'>"
+                                f"⚠️ Piyasa geneli (%{r.get('index_corr',0)*100:.0f})</span>"
+                            )
+                        elif r.get('index_corr') is not None and r['index_corr'] < 0.4:
+                            badges_html += (
+                                "<span style='background:#F0FDF4;color:#0E9F6E;"
+                                "font-size:9px;padding:1px 6px;border-radius:3px;margin-right:4px'>"
+                                "✅ Hisseye özgü</span>"
+                            )
+                        if r.get('unique_periods', 0) >= 3:
+                            badges_html += (
+                                "<span style='background:#EFF6FF;color:#1A56DB;"
+                                "font-size:9px;padding:1px 6px;border-radius:3px'>"
+                                f"📅 {r['unique_periods']} farklı dönem</span>"
+                            )
+
                         st.markdown(f"""
                         <div style='background:#FFFFFF;border:1.5px solid #E5E9F0;
                                     border-radius:10px;padding:14px 12px;margin-bottom:8px'>
@@ -425,6 +522,8 @@ def render_scanner(all_data_getter, bist_lists):
                                                 color:{c_col}'>%{conf:.0f}</div>
                                 </div>
                             </div>
+
+                            <div style='margin:6px 0'>{badges_html}</div>
 
                             <div style='display:flex;justify-content:space-between;
                                         margin:10px 0;gap:4px'>
@@ -465,3 +564,14 @@ def render_scanner(all_data_getter, bist_lists):
                             <div style='margin-top:5px'>{fmt_html}</div>
                         </div>
                         """, unsafe_allow_html=True)
+
+                        if render_add_to_portfolio_button is not None:
+                            render_add_to_portfolio_button(
+                                ticker=r['ticker'],
+                                current_price=r['current_price'],
+                                source=f"Fırsat Tarayıcı ({r['window']}G)",
+                                signal_score=r.get('avg_sim'),
+                                confidence=r.get('confidence'),
+                                expected_pct=r.get('weighted_pct'),
+                                key_suffix=f"scan_{r['window']}_{row_i}"
+                            )

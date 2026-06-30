@@ -26,7 +26,8 @@ def init_library():
 def scan_template_today(template: Dict,
                         all_data: Dict,
                         find_patterns_fn,
-                        min_sim: float = 60.0) -> List[Dict]:
+                        min_sim: float = 60.0,
+                        index_closes: np.ndarray = None) -> Dict:
     """
     Kayıtlı bir şablona BUGÜN benzeyen hisseleri bul.
     
@@ -35,27 +36,59 @@ def scan_template_today(template: Dict,
     - Her hissenin SON [n_days] günlük hareketini al
     - BIST-PSI ile karşılaştır
     - Benzerlik yüksekse → o hisse şu an bu şablonu yapıyor
+    - Şablonun kendisinin endeksle korelasyonu kontrol edilir (genel piyasa uyarısı)
+    
+    Returns: {'results': [...], 'index_corr': float|None, 'warning': str|None}
     """
     from bist_psi import BISTPSI, detect_regime
-    
+
     tpl_prices  = np.array(template['prices'],  dtype=float)
     tpl_volumes = np.array(template['volumes'], dtype=float)
     n = len(tpl_prices)
-    
+
+    # Şablonun endeksle korelasyonu — bu şablon zaten piyasa geneli mi?
+    index_corr = None
+    warning = None
+    if index_closes is not None and len(index_closes) >= n:
+        # Şablonun tarihiyle eşleşen endeks segmentini bulamayız (farklı zaman),
+        # bu yüzden şablonun KENDİ iç volatilite/getiri istatistiğini
+        # genel piyasanın tipik istatistiğiyle kıyaslarız (yaklaşık kontrol).
+        idx_rets_all = np.diff(index_closes) / (np.abs(index_closes[:-1]) + 1e-9)
+        tpl_rets = np.diff(tpl_prices) / (np.abs(tpl_prices[:-1]) + 1e-9)
+        if len(tpl_rets) >= 4 and len(idx_rets_all) >= n:
+            # Şablonun son n-1 günü ile aynı uzunlukta kayan endeks pencereleri
+            # arasında en yüksek korelasyonu ara — şablon herhangi bir piyasa
+            # döneminde de bu kadar yüksek korele olabiliyor mu?
+            best_corr = 0.0
+            step = max(1, n // 4)
+            for i in range(0, len(idx_rets_all) - len(tpl_rets), step):
+                seg = idx_rets_all[i:i+len(tpl_rets)]
+                if len(seg) == len(tpl_rets) and np.std(seg) > 1e-9 and np.std(tpl_rets) > 1e-9:
+                    c = float(np.corrcoef(tpl_rets, seg)[0, 1])
+                    if c > best_corr:
+                        best_corr = c
+            index_corr = round(best_corr, 2)
+            if index_corr > 0.75:
+                warning = (
+                    f"⚠️ Bu şablon BIST100 ile bazı dönemlerde %{index_corr*100:.0f} "
+                    f"korelasyon gösteriyor — bulunan eşleşmeler genel piyasa hareketini "
+                    f"yansıtıyor olabilir, hisseye özgü olmayabilir."
+                )
+
     psi_engine = BISTPSI()
     results = []
-    
+
     for ticker, df in all_data.items():
         closes  = df['Close'].values.astype(float)
         volumes = df['Volume'].values.astype(float)
-        
+
         if len(closes) < n:
             continue
-        
+
         # Son n günü al — bugünkü durum
         recent_prices  = closes[-n:]
         recent_volumes = volumes[-n:]
-        
+
         try:
             score, psi_result = psi_engine.compute(
                 tpl_prices, tpl_volumes,
@@ -63,21 +96,20 @@ def scan_template_today(template: Dict,
             )
         except Exception:
             continue
-        
+
         if score < min_sim:
             continue
-        
+
         # Şablonun geçmiş performansını hesapla
-        hist_return = template.get('pct_change', 0)
         last_scan = template.get('scan_history', [])
         exp_pct = 0.0
         if last_scan:
             c_data = last_scan[-1].get('consensus', {})
             exp_pct = c_data.get('weighted_pct', 0)
-        
+
         # Son fiyat değişimi
         recent_change = (recent_prices[-1] - recent_prices[0]) / (recent_prices[0] + 1e-9) * 100
-        
+
         results.append({
             'ticker':       ticker,
             'similarity':   round(score, 1),
@@ -89,9 +121,13 @@ def scan_template_today(template: Dict,
             'breakdown':     psi_result.dim_scores,
             'mahalanobis':   psi_result.mahalanobis_sim,
         })
-    
+
     results.sort(key=lambda x: x['similarity'], reverse=True)
-    return results[:10]
+    return {
+        'results': results[:10],
+        'index_corr': index_corr,
+        'warning': warning,
+    }
 
 def save_template(symbol: str,
                   start_date: str,
@@ -520,14 +556,37 @@ def render_library(fetch_ticker_fn, find_patterns_fn,
                     with st.spinner(f"Veri yükleniyor..."):
                         today_data = fetch_batch_fn(tickers, period="6mo")
 
+                    # Endeks verisi — şablon kalite kontrolü için
+                    index_closes_today = None
+                    try:
+                        import yfinance as yf
+                        xu100_raw = yf.download("XU100.IS", period="1y",
+                                                auto_adjust=True, progress=False, threads=False)
+                        if xu100_raw is not None and not xu100_raw.empty:
+                            if isinstance(xu100_raw.columns, pd.MultiIndex):
+                                xu100_raw.columns = xu100_raw.columns.get_level_values(0)
+                            index_closes_today = xu100_raw['Close'].values.astype(float)
+                    except Exception:
+                        index_closes_today = None
+
                     with st.spinner(f"{len(today_data)} hisse güncel veriyle karşılaştırılıyor..."):
-                        today_results = scan_template_today(
-                            t, today_data, find_patterns_fn, today_min_sim
+                        today_scan_result = scan_template_today(
+                            t, today_data, find_patterns_fn, today_min_sim,
+                            index_closes=index_closes_today
                         )
 
-                    st.session_state[f'today_results_{t["id"]}'] = today_results
+                    st.session_state[f'today_results_{t["id"]}'] = today_scan_result
 
-                today_results = st.session_state.get(f'today_results_{t["id"]}', [])
+                today_scan_result = st.session_state.get(f'today_results_{t["id"]}')
+                today_results = today_scan_result.get('results', []) if today_scan_result else []
+
+                if today_scan_result and today_scan_result.get('warning'):
+                    st.warning(today_scan_result['warning'])
+                elif today_scan_result and today_scan_result.get('index_corr') is not None:
+                    ic = today_scan_result['index_corr']
+                    if ic < 0.4:
+                        st.success(f"✅ Şablonun piyasa endeksiyle korelasyonu düşük (%{ic*100:.0f}) — hisseye özgü bir hareket.")
+
                 if today_results:
                     st.success(f"✅ **{len(today_results)}** hisse bu şablona benziyor!")
 
@@ -606,7 +665,7 @@ def render_library(fetch_ticker_fn, find_patterns_fn,
                                 </div>
                                 """, unsafe_allow_html=True)
 
-                elif st.session_state.get(f'today_results_{t["id"]}') is not None:
+                elif today_scan_result is not None:
                     st.warning("Bu şablona benzer hisse bulunamadı. Eşiği düşürün.")
 
                 if st.button("✖ Kapat", key=f"close_today_{t['id']}"):

@@ -6,6 +6,7 @@ from template_library import (
     render_library, save_template, init_library, get_library
 )
 from backtesting import render_backtest
+from portfolio import render_portfolio, render_add_to_portfolio_button
 from character_similarity import (
     build_character_profile, character_similarity,
     future_behavior_compatibility, historical_correlation, correlation_score
@@ -1204,6 +1205,100 @@ def fig_breakdown_radar(breakdown, ticker):
 # BÖLÜM 5: ANA UYGULAMA
 # ══════════════════════════════════════════════════════════════════════════════
 
+def render_telegram_setup():
+    """Telegram bildirim kurulum rehberi ve test mesajı gönderme."""
+    st.markdown("## 🔔 Telegram Bildirimleri")
+    st.caption(
+        "GitHub Actions her gün BIST kapanışından sonra otomatik tarama yapar "
+        "ve sonuçları bu Telegram botuna gönderir. Streamlit kapalı olsa bile çalışır."
+    )
+    st.divider()
+
+    st.markdown("### 1️⃣ Telegram Bot Oluştur")
+    st.markdown("""
+    1. Telegram'da **@BotFather** ile sohbet açın
+    2. `/newbot` komutunu gönderin
+    3. Bot için bir isim ve kullanıcı adı belirleyin (örn: `bist_pattern_bot`)
+    4. BotFather size bir **token** verecek — örnek: `123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ`
+    5. Bu token'ı kopyalayın, sonraki adımda kullanacaksınız
+    """)
+
+    st.markdown("### 2️⃣ Chat ID'nizi Öğrenin")
+    st.markdown("""
+    1. Oluşturduğunuz bota Telegram'dan bir mesaj gönderin (örn: "merhaba")
+    2. Tarayıcıda şu adresi açın (TOKEN yerine kendi token'ınızı yazın):
+       ```
+       https://api.telegram.org/botTOKEN/getUpdates
+       ```
+    3. Çıkan JSON içinde `"chat":{"id": 123456789, ...}` kısmındaki sayıyı bulun
+    4. Bu sayı sizin **Chat ID**'niz
+    """)
+
+    st.markdown("### 3️⃣ GitHub Secrets'a Ekle")
+    st.markdown("""
+    1. GitHub reponuzda **Settings → Secrets and variables → Actions** sekmesine gidin
+    2. **"New repository secret"** ile iki secret ekleyin:
+       - İsim: `TELEGRAM_BOT_TOKEN` — Değer: BotFather'dan aldığınız token
+       - İsim: `TELEGRAM_CHAT_ID` — Değer: 2. adımda bulduğunuz chat ID
+    3. Kaydedin
+    """)
+
+    st.markdown("### 4️⃣ Otomasyonu Aktif Et")
+    st.markdown("""
+    `daily_scan.py` ve `.github/workflows/daily_scan.yml` dosyaları reponuza zaten eklendi.
+
+    - Varsayılan çalışma saati: **Hafta içi 18:30 (İstanbul saati)** — BIST kapanışından sonra
+    - Saat değiştirmek isterseniz `.github/workflows/daily_scan.yml` dosyasındaki
+      `cron: '30 15 * * 1-5'` satırını düzenleyin (UTC saatine göre yazılır)
+    - **Actions** sekmesinden **"Run workflow"** ile istediğiniz an manuel de tetikleyebilirsiniz
+    """)
+
+    st.divider()
+    st.markdown("### 🧪 Bağlantıyı Test Et")
+    st.caption(
+        "Token ve Chat ID'yi burada girip test mesajı gönderebilirsiniz. "
+        "Bu sadece test amaçlıdır — gerçek otomasyon GitHub Actions üzerinden çalışır, "
+        "buradaki bilgiler kaydedilmez."
+    )
+
+    tc1, tc2 = st.columns(2)
+    test_token = tc1.text_input("Bot Token (test için)", type="password")
+    test_chat_id = tc2.text_input("Chat ID (test için)")
+
+    if st.button("📤 Test Mesajı Gönder", type="primary"):
+        if not test_token or not test_chat_id:
+            st.warning("Token ve Chat ID girin.")
+        else:
+            try:
+                import requests
+                url = f"https://api.telegram.org/bot{test_token}/sendMessage"
+                payload = {
+                    "chat_id": test_chat_id,
+                    "text": "✅ BIST Pattern Matcher botu başarıyla bağlandı! "
+                            "Günlük taramalar bu sohbete gelecek.",
+                }
+                resp = requests.post(url, json=payload, timeout=15)
+                if resp.status_code == 200:
+                    st.success("✅ Test mesajı gönderildi! Telegram'ı kontrol edin.")
+                else:
+                    st.error(f"❌ Hata: {resp.status_code} — {resp.text}")
+            except Exception as e:
+                st.error(f"❌ Bağlantı hatası: {e}")
+
+    st.divider()
+    st.markdown("### ⚙️ Otomasyon Parametreleri")
+    st.info(
+        "`daily_scan.py` dosyasında şu parametreler kullanılıyor (backtesting "
+        "sonuçlarına göre optimize edilmiş):\n\n"
+        "- **Min BIST-PSI:** 80 (backtesting: %61 kazanç oranı)\n"
+        "- **Güven Bandı:** %55-68 (backtesting: %66 kazanç oranı)\n"
+        "- **Kapsam:** BIST 100 (GitHub Actions süre limiti için)\n"
+        "- **Şablon Uzunlukları:** 20 ve 40 gün\n\n"
+        "Bu değerleri değiştirmek isterseniz `daily_scan.py` dosyasının başındaki "
+        "`MIN_SIM`, `MIN_CONFIDENCE`, `MAX_CONFIDENCE`, `SCAN_SCOPE` değişkenlerini düzenleyin."
+    )
+
+
 def main():
     # Navigasyon
     with st.sidebar:
@@ -1211,12 +1306,21 @@ def main():
         # Yönlendirme isteği varsa index'i ayarla
         _goto = st.session_state.pop('_goto_page', None)
         _pages = ["🔍 Pattern Matcher", "🔭 Fırsat Tarayıcı",
-                  "📚 Şablon Kütüphanesi", "📊 Backtesting"]
+                  "📚 Şablon Kütüphanesi", "📊 Backtesting",
+                  "💼 Portföy Simülasyonu", "🔔 Telegram Bildirimleri"]
         _default_idx = _pages.index(_goto) if _goto and _goto in _pages else 0
         page = st.radio("", _pages,
                         index=_default_idx,
                         label_visibility="collapsed", key="page_nav")
         st.divider()
+
+    if page == "🔔 Telegram Bildirimleri":
+        render_telegram_setup()
+        return
+
+    if page == "💼 Portföy Simülasyonu":
+        render_portfolio(fetch_ticker_fn=fetch_ticker)
+        return
 
     if page == "📊 Backtesting":
         render_backtest(
@@ -1716,6 +1820,20 @@ def main():
             </div>
         </div>
         """, unsafe_allow_html=True)
+
+        # Portföye ekle butonu — şablonu seçtiğiniz ana hisse için
+        if direction == "YÜKSELİŞ":
+            pcol1, pcol2 = st.columns([3, 1])
+            with pcol2:
+                render_add_to_portfolio_button(
+                    ticker=sym,
+                    current_price=current_price,
+                    source="Pattern Matcher",
+                    signal_score=consensus.get('avg_similarity'),
+                    confidence=conf,
+                    expected_pct=wpct,
+                    key_suffix="pm"
+                )
 
         # Ağırlık tablosu
         with st.expander("📊 Bireysel Ağırlıklar ve Katkılar"):
