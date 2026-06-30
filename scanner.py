@@ -401,6 +401,8 @@ def render_scanner(all_data_getter, bist_lists):
     </div>
     """, unsafe_allow_html=True)
 
+    CHUNK_SIZE = 20  # Her rerun'da bu kadar hisse işlenir — bağlantı canlı kalır
+
     if scan_btn:
         scope_map = {
             "BIST 30": bist_lists['bist30'],
@@ -409,12 +411,9 @@ def render_scanner(all_data_getter, bist_lists):
         }
         tickers = scope_map[scope]
 
-        prog = st.progress(0, text="Veriler yükleniyor...")
-        with st.spinner(""):
+        with st.spinner("Veriler yükleniyor..."):
             all_data = all_data_getter(tickers, period="2y")
-        prog.progress(10, text=f"{len(all_data)} hisse yüklendi. Endeks verisi alınıyor...")
 
-        # BIST100 endeks verisi — genel piyasa hareketi filtresi için
         index_closes = None
         try:
             import yfinance as yf
@@ -427,68 +426,93 @@ def render_scanner(all_data_getter, bist_lists):
         except Exception:
             index_closes = None
 
-        prog.progress(15, text="Tarama başlıyor...")
+        clear_window_cache()
 
-        results_20, results_40 = [], []
-        total = len(all_data)
-        clear_window_cache()  # Yeni tarama — önceki önbelleği temizle
-
-        status_text = st.empty()
-        eta_text = st.empty()
-        start_time = time.time()
-
-        for idx, (ticker, df) in enumerate(all_data.items()):
-            pct = 15 + int((idx / total) * 80)
-
-            # Her 5 hissede bir ETA güncelle (her hissede güncellemek gereksiz yavaşlatır)
-            if idx % 5 == 0 or idx == total - 1:
-                elapsed = time.time() - start_time
-                rate = (idx + 1) / elapsed if elapsed > 0 else 0
-                remaining = (total - idx - 1) / rate if rate > 0 else 0
-                prog.progress(pct, text=f"Taranan: {ticker} ({idx+1}/{total})")
-                eta_text.caption(
-                    f"⏱️ Geçen: {elapsed:.0f}sn | Tahmini kalan: {remaining:.0f}sn | "
-                    f"Bulunan: {len(results_20)+len(results_40)} fırsat"
-                )
-
-            # 20 günlük şablon
-            r20 = scan_single_ticker(ticker, df, all_data,
-                                     window=20, fut_window=30,
-                                     min_sim=min_sim, index_closes=index_closes)
-            if r20 and min_conf <= r20['confidence'] <= max_conf:
-                results_20.append(r20)
-
-            # 40 günlük şablon
-            r40 = scan_single_ticker(ticker, df, all_data,
-                                     window=40, fut_window=60,
-                                     min_sim=min_sim, index_closes=index_closes)
-            if r40 and min_conf <= r40['confidence'] <= max_conf:
-                results_40.append(r40)
-
-            # Ara kayıt: her 15 hissede bir session_state'e yaz (kesinti olursa veri kaybolmasın)
-            if (idx + 1) % 15 == 0:
-                st.session_state['scan_results_20_partial'] = list(results_20)
-                st.session_state['scan_results_40_partial'] = list(results_40)
-                st.session_state['scan_progress_partial'] = f"{idx+1}/{total}"
-
-        clear_window_cache()  # Tarama bitti — belleği serbest bırak
-
-        # Sırala
-        key_fn = lambda x: x['confidence'] * 0.5 + x['avg_sim'] * 0.3 + x['weighted_pct'] * 0.2
-        results_20.sort(key=key_fn, reverse=True)
-        results_40.sort(key=key_fn, reverse=True)
-
-        prog.progress(100, text="✅ Tamamlandı!")
-        total_time = time.time() - start_time
-        eta_text.caption(f"✅ Tarama {total_time:.0f} saniyede tamamlandı.")
-        time.sleep(0.4); prog.empty()
-
-        st.session_state['scan_results_20'] = results_20
-        st.session_state['scan_results_40'] = results_40
-        st.session_state['scan_scope'] = scope
-        st.session_state.pop('scan_results_20_partial', None)
-        st.session_state.pop('scan_results_40_partial', None)
+        # Yeni tarama oturumu başlat — chunk işleme için state hazırla
+        st.session_state['scan_job'] = {
+            'tickers': list(all_data.keys()),
+            'all_data': all_data,
+            'index_closes': index_closes,
+            'min_sim': min_sim,
+            'min_conf': min_conf,
+            'max_conf': max_conf,
+            'scope': scope,
+            'cursor': 0,
+            'results_20': [],
+            'results_40': [],
+            'start_time': time.time(),
+        }
+        st.session_state.pop('scan_results_20', None)
+        st.session_state.pop('scan_results_40', None)
         st.rerun()
+
+    # ── Devam eden tarama işi varsa chunk'lar halinde işle ──────────────────
+    job = st.session_state.get('scan_job')
+    if job is not None:
+        total = len(job['tickers'])
+        cursor = job['cursor']
+        chunk_end = min(cursor + CHUNK_SIZE, total)
+        chunk_tickers = job['tickers'][cursor:chunk_end]
+
+        prog = st.progress(int(cursor / total * 100) if total else 0,
+                           text=f"Taranıyor: {cursor}/{total} hisse")
+        eta_text = st.empty()
+        elapsed = time.time() - job['start_time']
+        rate = cursor / elapsed if elapsed > 0 and cursor > 0 else 0
+        remaining = (total - cursor) / rate if rate > 0 else 0
+        eta_text.caption(
+            f"⏱️ Geçen: {elapsed:.0f}sn | Tahmini kalan: {remaining:.0f}sn | "
+            f"Bulunan: {len(job['results_20']) + len(job['results_40'])} fırsat | "
+            f"Bu sayfa otomatik ilerleyecek — kapatmayın"
+        )
+
+        if st.button("⏹️ Taramayı İptal Et", key="cancel_scan"):
+            st.session_state.pop('scan_job', None)
+            st.warning("Tarama iptal edildi.")
+            st.rerun()
+
+        for ticker in chunk_tickers:
+            df = job['all_data'][ticker]
+            r20 = scan_single_ticker(ticker, df, job['all_data'],
+                                     window=20, fut_window=30,
+                                     min_sim=job['min_sim'], index_closes=job['index_closes'])
+            if r20 and job['min_conf'] <= r20['confidence'] <= job['max_conf']:
+                job['results_20'].append(r20)
+
+            r40 = scan_single_ticker(ticker, df, job['all_data'],
+                                     window=40, fut_window=60,
+                                     min_sim=job['min_sim'], index_closes=job['index_closes'])
+            if r40 and job['min_conf'] <= r40['confidence'] <= job['max_conf']:
+                job['results_40'].append(r40)
+
+        job['cursor'] = chunk_end
+        st.session_state['scan_job'] = job
+
+        if chunk_end < total:
+            # Daha hisse var — kısa bekleme sonrası otomatik devam et
+            time.sleep(0.1)
+            st.rerun()
+        else:
+            # Tarama tamamlandı
+            clear_window_cache()
+            key_fn = lambda x: x['confidence'] * 0.5 + x['avg_sim'] * 0.3 + x['weighted_pct'] * 0.2
+            results_20 = sorted(job['results_20'], key=key_fn, reverse=True)
+            results_40 = sorted(job['results_40'], key=key_fn, reverse=True)
+
+            total_time = time.time() - job['start_time']
+            st.session_state['scan_results_20'] = results_20
+            st.session_state['scan_results_40'] = results_40
+            st.session_state['scan_scope'] = job['scope']
+            st.session_state['scan_duration'] = total_time
+            st.session_state.pop('scan_job', None)  # all_data dahil ağır veriyi serbest bırak
+            st.success(f"✅ Tarama {total_time:.0f} saniyede tamamlandı!")
+            st.rerun()
+        return  # Chunk işlenirken aşağıdaki sonuç bölümünü gösterme
+
+    # ── Devam eden iş yoksa ve daha önce bitmiş sonuç varsa devam ──────────
+    scan_duration = st.session_state.get('scan_duration')
+    if scan_duration:
+        st.caption(f"✅ Son tarama {scan_duration:.0f} saniyede tamamlandı.")
 
     # ── Sonuçlar ──
     r20 = st.session_state.get('scan_results_20', [])
