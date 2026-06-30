@@ -653,6 +653,39 @@ def find_patterns(template_prices, template_volumes, all_data,
         })
 
     results.sort(key=lambda x: x['similarity'], reverse=True)
+
+    # ── Tarih Çeşitliliği Filtresi ──────────────────────────────────────────
+    # Eğer çok sayıda sonuç aynı dar tarih aralığına yığılmışsa (genel piyasa
+    # hareketi sinyali), bu kümeden sadece en iyi 1-2 sonucu tut ve diğer
+    # tarihlerdeki eşleşmelere de yer aç — sonuç çeşitliliğini artır.
+    if len(results) > top_n:
+        from collections import defaultdict
+        date_clusters = defaultdict(list)
+        for r in results:
+            # Ayı bazlı kümeleme (aynı ay-yıl aynı küme sayılır)
+            cluster_key = r['start_date'][3:]  # "GG.AA.YYYY" -> "AA.YYYY"
+            date_clusters[cluster_key].append(r)
+
+        diversified = []
+        cluster_take = {k: 0 for k in date_clusters}
+        max_per_cluster = max(1, top_n // 3)  # Aynı dönemden en fazla bu kadar al
+
+        for r in results:
+            cluster_key = r['start_date'][3:]
+            if cluster_take[cluster_key] < max_per_cluster:
+                diversified.append(r)
+                cluster_take[cluster_key] += 1
+            if len(diversified) >= top_n:
+                break
+
+        # Yeterli çeşitlilik bulunamadıysa orijinal sıralamadan tamamla
+        if len(diversified) < top_n:
+            remaining = [r for r in results if r not in diversified]
+            diversified.extend(remaining[:top_n - len(diversified)])
+
+        results = diversified
+        results.sort(key=lambda x: x['similarity'], reverse=True)
+
     return results[:top_n]
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1311,6 +1344,59 @@ def main():
         st.warning("En az 5 günlük aralık seçin.")
         return
 
+    # ── Şablon Kalite Kontrolü ──────────────────────────────────────────────
+    n_days = len(seg_df)
+    quality_warnings = []
+
+    # 1. Uzunluk kontrolü
+    if n_days > 90:
+        quality_warnings.append(
+            f"⚠️ **Şablon çok uzun ({n_days} gün).** 90+ günlük şablonlarda genel piyasa "
+            f"trendi hisseye özgü pattern'i baskılayabilir. Sonuçlar tüm hisselerde "
+            f"aynı tarihe yığılıyorsa bu büyük ihtimalle BIST geneli bir hareket "
+            f"yakalandığı içindir — özgün bir pattern değildir. "
+            f"**20-60 gün arası** daha güvenilir sonuç verir."
+        )
+    elif n_days > 60:
+        quality_warnings.append(
+            f"💡 Şablon {n_days} gün — orta-uzun vadeli. Sonuçları değerlendirirken "
+            f"genel piyasa etkisini göz önünde bulundurun."
+        )
+
+    # 2. BIST100 endeksiyle korelasyon kontrolü
+    index_corr = None
+    try:
+        xu100_raw = yf.download("XU100.IS", period=period,
+                                auto_adjust=True, progress=False, threads=False)
+        if xu100_raw is not None and not xu100_raw.empty:
+            if isinstance(xu100_raw.columns, pd.MultiIndex):
+                xu100_raw.columns = xu100_raw.columns.get_level_values(0)
+            xu100_raw.index = pd.to_datetime(xu100_raw.index)
+            idx_seg = xu100_raw.loc[sel_start_ts:sel_end_ts]
+            if len(idx_seg) >= 5:
+                min_len = min(len(seg_df), len(idx_seg))
+                stock_rets = daily_returns(seg_df['Close'].values[-min_len:])
+                idx_rets   = daily_returns(idx_seg['Close'].values[-min_len:])
+                m = min(len(stock_rets), len(idx_rets))
+                if m >= 4 and np.std(stock_rets[-m:]) > 1e-9 and np.std(idx_rets[-m:]) > 1e-9:
+                    index_corr = float(np.corrcoef(stock_rets[-m:], idx_rets[-m:])[0, 1])
+    except Exception:
+        index_corr = None
+
+    if index_corr is not None and index_corr > 0.75:
+        quality_warnings.append(
+            f"⚠️ **Bu şablon BIST100 endeksiyle %{index_corr*100:.0f} korelasyonlu.** "
+            f"Seçtiğiniz hareket hisseye özgü olmaktan çok genel piyasa hareketini "
+            f"yansıtıyor olabilir. Tarama sonuçlarında çok farklı karakterde hisseler "
+            f"aynı tarihte 'benzer' çıkıyorsa bu yüzdendir. Daha kısa veya hisseye özgü "
+            f"bir kırılma/dönüş bölgesi seçmeyi deneyin."
+        )
+
+    if quality_warnings:
+        with st.container():
+            for w in quality_warnings:
+                st.warning(w)
+
     st.plotly_chart(fig_main_chart(df, sym, sel_start_ts, sel_end_ts),
                     use_container_width=True)
 
@@ -1319,6 +1405,17 @@ def main():
     # Şablon istatistikleri — grafik hemen altında hesaplanmalı
     seg_closes = seg_df['Close'].values
     seg_vols = seg_df['Volume'].values
+
+    # Kalite özet satırı
+    if index_corr is not None:
+        corr_color = '#E02424' if index_corr > 0.75 else ('#E3A008' if index_corr > 0.5 else '#0E9F6E')
+        corr_label = 'Yüksek (piyasa geneli)' if index_corr > 0.75 else (
+            'Orta' if index_corr > 0.5 else 'Düşük (hisseye özgü)')
+        st.markdown(
+            f"<div style='font-size:13px;color:#888'>🔗 BIST100 Korelasyonu: "
+            f"<span style='color:{corr_color};font-weight:600'>%{index_corr*100:.0f} — {corr_label}</span></div>",
+            unsafe_allow_html=True
+        )
 
     # Caption + Kaydet butonu yan yana
     _cap_col, _save_col = st.columns([4, 1])
@@ -1560,6 +1657,19 @@ def main():
 
     # ── KONSENSÜS PANELİ ──
     current_price = float(df['Close'].iloc[-1])
+
+    # Eşleşme tarih çeşitliliği kontrolü
+    unique_periods = len(set(m['start_date'][3:] for m in matches)) if matches else 0
+    if matches and unique_periods <= 1 and len(matches) >= 3:
+        st.warning(
+            "⚠️ **Tüm eşleşmeler aynı döneme ait** — bu büyük ihtimalle hisseye özgü "
+            "bir pattern değil, genel piyasa hareketi yakalandığı anlamına gelir. "
+            "Şablon uzunluğunu kısaltmayı (20-60 gün) veya farklı bir tarih aralığı "
+            "seçmeyi deneyin."
+        )
+    elif matches and unique_periods >= 3:
+        st.success(f"✅ Eşleşmeler **{unique_periods} farklı dönemden** geliyor — çeşitlilik iyi.")
+
     consensus = calc_consensus(matches, current_price)
     if consensus:
         direction = consensus['direction']
