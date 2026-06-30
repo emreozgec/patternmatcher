@@ -684,143 +684,67 @@ def render_scanner(all_data_getter, bist_lists):
                 for col, r in zip(cols, row):
                     with col:
                         conf = r['confidence']
-                        c_col = ('#0E9F6E' if conf >= 65 else
-                                 '#E3A008' if conf >= 50 else '#E02424')
-                        conf_bar = int(conf / 5)
-                        fmt_html = "".join(
-                            f"<span style='background:#EFF6FF;color:#1A56DB;"
-                            f"font-size:9px;padding:1px 5px;border-radius:3px;margin:1px'>{f}</span>"
-                            for f in r['formations'][:2]
-                        ) or "<span style='font-size:10px;color:#aaa'>—</span>"
+                        conf_emoji = "🟢" if conf >= 65 else "🟡" if conf >= 50 else "🔴"
 
-                        # En güçlü eşleşme — kart üstünde büyük gösterilecek
-                        top_match = r['top_matches'][0] if r.get('top_matches') else None
+                        with st.container(border=True):
+                            # Başlık satırı: hisse adı + güven
+                            h1, h2 = st.columns([2, 1])
+                            with h1:
+                                st.markdown(f"### {r['ticker']}")
+                                st.caption(r['regime'])
+                            with h2:
+                                st.metric("Güven", f"%{conf:.0f}")
 
-                        # Diğer eşleşmeler (top_match hariç)
-                        other_matches = r['top_matches'][1:3] if r.get('top_matches') and len(r['top_matches']) > 1 else []
-                        other_match_lines = ""
-                        for m in other_matches:
-                            m_color = '#0E9F6E' if m['fut_pct'] > 0 else '#E02424'
-                            date_label = m.get('match_date_label', '')
-                            other_match_lines += (
-                                f"<div style='display:flex;justify-content:space-between;"
-                                f"font-size:10px;padding:2px 0'>"
-                                f"<span style='color:#555'>{m['source']}"
-                                f"{f' ({date_label})' if date_label else ''}</span>"
-                                f"<span style='color:#888'>%{m['sim']:.0f}</span>"
-                                f"<span style='color:{m_color};font-weight:600'>"
-                                f"{m['fut_pct']:+.1f}%</span></div>"
-                            )
+                            # Rozetler (piyasa geneli mi / hisseye özgü mü, dönem çeşitliliği)
+                            badge_bits = []
+                            if r.get('index_penalty_applied'):
+                                badge_bits.append(f"⚠️ Piyasa geneli (%{r.get('index_corr', 0)*100:.0f})")
+                            elif r.get('index_corr') is not None and r['index_corr'] < 0.4:
+                                badge_bits.append("✅ Hisseye özgü")
+                            if r.get('unique_periods', 0) >= 3:
+                                badge_bits.append(f"📅 {r['unique_periods']} farklı dönem")
+                            if badge_bits:
+                                st.caption(" · ".join(badge_bits))
 
-                        # Endeks korelasyonu ve dönem çeşitliliği rozetleri
-                        badges_html = ""
-                        if r.get('index_penalty_applied'):
-                            badges_html += (
-                                "<span style='background:#FEF2F2;color:#E02424;"
-                                "font-size:9px;padding:1px 6px;border-radius:3px;margin-right:4px'>"
-                                f"⚠️ Piyasa geneli (%{r.get('index_corr',0)*100:.0f})</span>"
-                            )
-                        elif r.get('index_corr') is not None and r['index_corr'] < 0.4:
-                            badges_html += (
-                                "<span style='background:#F0FDF4;color:#0E9F6E;"
-                                "font-size:9px;padding:1px 6px;border-radius:3px;margin-right:4px'>"
-                                "✅ Hisseye özgü</span>"
-                            )
-                        if r.get('unique_periods', 0) >= 3:
-                            badges_html += (
-                                "<span style='background:#EFF6FF;color:#1A56DB;"
-                                "font-size:9px;padding:1px 6px;border-radius:3px'>"
-                                f"📅 {r['unique_periods']} farklı dönem</span>"
-                            )
+                            # En çok benzediği hisse
+                            top_match = r['top_matches'][0] if r.get('top_matches') else None
+                            if top_match:
+                                tm_date = top_match.get('match_date_label', '')
+                                tm_sign = "📈" if top_match['fut_pct'] > 0 else "📉"
+                                st.info(
+                                    f"**🔗 En çok benzediği:** {top_match['source']}"
+                                    f"{f' ({tm_date})' if tm_date else ''} — %{top_match['sim']:.0f} benzerlik\n\n"
+                                    f"O dönemden sonra: {tm_sign} **{top_match['fut_pct']:+.1f}%** hareket etti"
+                                )
 
-                        # En güçlü eşleşme bloğu — kartın en görünür yeri
-                        if top_match:
-                            tm_color = '#0E9F6E' if top_match['fut_pct'] > 0 else '#E02424'
-                            tm_icon = '📈' if top_match['fut_pct'] > 0 else '📉'
-                            tm_date = top_match.get('match_date_label', '')
-                            top_match_html = f"""
-                            <div style='background:linear-gradient(135deg,#F0F7FF,#FFFFFF);
-                                        border:1px solid #BFDBFE;border-radius:8px;
-                                        padding:8px 10px;margin:8px 0'>
-                                <div style='font-size:9px;color:#1A56DB;letter-spacing:0.5px;
-                                            margin-bottom:3px'>🔗 EN ÇOK BENZEDİĞİ HİSSE</div>
-                                <div style='display:flex;justify-content:space-between;align-items:center'>
-                                    <div style='font-size:16px;font-weight:800;color:#1A1A2E'>
-                                        {top_match['source']}
-                                        {f"<span style='font-size:10px;color:#888;font-weight:400'> · {tm_date}</span>" if tm_date else ""}
-                                    </div>
-                                    <div style='font-size:14px;font-weight:700;color:#1A56DB'>
-                                        %{top_match['sim']:.0f}
-                                    </div>
-                                </div>
-                                <div style='font-size:11px;color:#555;margin-top:2px'>
-                                    O dönemden sonra: <b style='color:{tm_color}'>
-                                    {tm_icon} {top_match['fut_pct']:+.1f}%</b> hareket etti
-                                </div>
-                            </div>
-                            """
-                        else:
-                            top_match_html = ""
+                            # Ana metrikler
+                            m1, m2, m3, m4 = st.columns(4)
+                            m1.metric("Güncel", f"{r['current_price']:.2f} ₺")
+                            m2.metric("Beklenen", f"+{r['weighted_pct']:.1f}%")
+                            m3.metric("Hedef", f"{r['target']:.2f} ₺")
+                            rsi_label = "Aşırı satım" if r['tpl_rsi'] < 30 else "Aşırı alım" if r['tpl_rsi'] > 70 else None
+                            m4.metric("RSI", f"{r['tpl_rsi']:.0f}", delta=rsi_label, delta_color="off")
 
-                        st.markdown(f"""
-                        <div style='background:#FFFFFF;border:1.5px solid #E5E9F0;
-                                    border-radius:10px;padding:14px 12px;margin-bottom:8px'>
-                            <div style='display:flex;justify-content:space-between;align-items:start'>
-                                <div>
-                                    <div style='font-size:20px;font-weight:800;
-                                                color:#1A1A2E'>{r['ticker']}</div>
-                                    <div style='font-size:10px;color:#888'>{r['regime']}</div>
-                                </div>
-                                <div style='text-align:right'>
-                                    <div style='font-size:10px;color:#888'>GÜVEN</div>
-                                    <div style='font-size:20px;font-weight:700;
-                                                color:{c_col}'>%{conf:.0f}</div>
-                                </div>
-                            </div>
+                            # Diğer benzer dönemler
+                            other_matches = (r['top_matches'][1:3]
+                                              if r.get('top_matches') and len(r['top_matches']) > 1 else [])
+                            if other_matches:
+                                with st.expander("Diğer benzer dönemler"):
+                                    for m in other_matches:
+                                        date_label = m.get('match_date_label', '')
+                                        sign = "🟢" if m['fut_pct'] > 0 else "🔴"
+                                        st.write(
+                                            f"{sign} **{m['source']}**"
+                                            f"{f' ({date_label})' if date_label else ''} "
+                                            f"— %{m['sim']:.0f} benzerlik → {m['fut_pct']:+.1f}%"
+                                        )
 
-                            <div style='margin:6px 0'>{badges_html}</div>
+                            # Güven barı
+                            st.progress(int(conf) / 100, text=f"{conf_emoji} Güven: %{conf:.0f}")
 
-                            {top_match_html}
-
-                            <div style='display:flex;justify-content:space-between;
-                                        margin:10px 0;gap:4px'>
-                                <div style='text-align:center'>
-                                    <div style='font-size:9px;color:#888'>GÜNCEL</div>
-                                    <div style='font-size:13px;font-weight:600'>
-                                        {r['current_price']:.2f} ₺</div>
-                                </div>
-                                <div style='text-align:center'>
-                                    <div style='font-size:9px;color:#888'>BEKLENEN</div>
-                                    <div style='font-size:13px;font-weight:700;color:#0E9F6E'>
-                                        +{r['weighted_pct']:.1f}%</div>
-                                </div>
-                                <div style='text-align:center'>
-                                    <div style='font-size:9px;color:#888'>HEDEF</div>
-                                    <div style='font-size:13px;font-weight:600;color:#0E9F6E'>
-                                        {r['target']:.2f} ₺</div>
-                                </div>
-                                <div style='text-align:center'>
-                                    <div style='font-size:9px;color:#888'>RSI</div>
-                                    <div style='font-size:13px;font-weight:600;
-                                                color:{"#E02424" if r["tpl_rsi"]>70 else "#0E9F6E" if r["tpl_rsi"]<30 else "#555"}'>
-                                        {r['tpl_rsi']:.0f}</div>
-                                </div>
-                            </div>
-
-                            {f'''<div style='background:#F9FAFB;border-radius:6px;
-                                        padding:6px 8px;margin:6px 0'>
-                                <div style='font-size:9px;color:#888;margin-bottom:3px'>
-                                    DİĞER BENZER DÖNEMLER
-                                </div>
-                                {other_match_lines}
-                            </div>''' if other_match_lines else ""}
-
-                            <div style='font-family:monospace;font-size:10px;color:{c_col}'>
-                                {'█'*conf_bar}{'░'*(20-conf_bar)} %{conf:.0f}
-                            </div>
-                            <div style='margin-top:5px'>{fmt_html}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                            # Formasyonlar
+                            if r['formations']:
+                                st.caption("🔷 " + " · ".join(r['formations'][:2]))
 
                         if render_add_to_portfolio_button is not None:
                             render_add_to_portfolio_button(
