@@ -510,10 +510,107 @@ def render_scanner(all_data_getter, bist_lists):
 
     st.success(f"✅ **{scope_label}** — {len(r20)} kısa vadeli + {len(r40)} orta vadeli fırsat")
 
-    tab20, tab40 = st.tabs([
-        f"📊 Kısa Vadeli — 20G ({len(r20)} hisse)",
-        f"📈 Orta Vadeli — 40G ({len(r40)} hisse)",
-    ])
+    # ── Çoklu Şablon Doğrulama ──────────────────────────────────────────────
+    # Hem 20G hem 40G taramasında aynı hisse, aynı yönde (bullish) çıktıysa
+    # bu çift doğrulanmış güçlü bir sinyaldir — yanlış pozitif riski çok daha düşük.
+    tickers_20 = {r['ticker']: r for r in r20}
+    tickers_40 = {r['ticker']: r for r in r40}
+    dual_confirmed = []
+    for ticker in set(tickers_20.keys()) & set(tickers_40.keys()):
+        r_20 = tickers_20[ticker]
+        r_40 = tickers_40[ticker]
+        # İkisi de bullish konsensüs (weighted_pct > 0) olmalı
+        if r_20['weighted_pct'] > 0 and r_40['weighted_pct'] > 0:
+            combined_conf = (r_20['confidence'] + r_40['confidence']) / 2
+            combined_sim = (r_20['avg_sim'] + r_40['avg_sim']) / 2
+            dual_confirmed.append({
+                'ticker': ticker,
+                'r20': r_20,
+                'r40': r_40,
+                'combined_confidence': round(combined_conf, 1),
+                'combined_similarity': round(combined_sim, 1),
+                'avg_expected_pct': round((r_20['weighted_pct'] + r_40['weighted_pct']) / 2, 2),
+            })
+    dual_confirmed.sort(key=lambda x: x['combined_confidence'], reverse=True)
+
+    if dual_confirmed:
+        st.markdown(f"""
+        <div style='background:linear-gradient(135deg,#F0FDF4,#FFFFFF);
+                    border:1.5px solid #0E9F6E;border-radius:10px;
+                    padding:14px 18px;margin:12px 0'>
+            <div style='font-size:14px;font-weight:700;color:#0E9F6E'>
+                ⭐ {len(dual_confirmed)} Hisse Çift Doğrulanmış!
+            </div>
+            <div style='font-size:12px;color:#555;margin-top:4px'>
+                Hem 20 günlük hem 40 günlük şablonda aynı yönde sinyal verdi —
+                yanlış pozitif riski normal sinyallere göre daha düşüktür.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    tabs_list = ["📊 Kısa Vadeli — 20G ({})".format(len(r20)),
+                 "📈 Orta Vadeli — 40G ({})".format(len(r40))]
+    if dual_confirmed:
+        tabs_list.append(f"⭐ Çift Doğrulanmış ({len(dual_confirmed)})")
+
+    all_tabs = st.tabs(tabs_list)
+    tab20, tab40 = all_tabs[0], all_tabs[1]
+    tab_dual = all_tabs[2] if dual_confirmed else None
+
+    if tab_dual is not None:
+        with tab_dual:
+            st.caption(
+                "Bu hisseler hem kısa (20G) hem orta (40G) vadeli taramada aynı "
+                "yönde sinyal verdi. İki bağımsız zaman dilimi aynı sonuca "
+                "ulaştığı için bu eşleşmeler özellikle dikkate değer."
+            )
+            dc1, dc2, dc3 = st.columns(3)
+            dc1.metric("Çift Doğrulanan", f"{len(dual_confirmed)} hisse")
+            dc2.metric("Ort. Birleşik Güven",
+                      f"%{np.mean([d['combined_confidence'] for d in dual_confirmed]):.0f}")
+            dc3.metric("Ort. Beklenen Hareket",
+                      f"+{np.mean([d['avg_expected_pct'] for d in dual_confirmed]):.1f}%")
+
+            for d in dual_confirmed:
+                r20_data = d['r20']
+                r40_data = d['r40']
+                st.markdown(f"""
+                <div style='background:#FFFFFF;border:1.5px solid #0E9F6E;
+                            border-radius:10px;padding:14px 16px;margin:10px 0'>
+                    <div style='display:flex;justify-content:space-between;align-items:center'>
+                        <div style='font-size:20px;font-weight:800;color:#1A1A2E'>
+                            ⭐ {d['ticker']}
+                        </div>
+                        <div style='text-align:right'>
+                            <div style='font-size:10px;color:#888'>BİRLEŞİK GÜVEN</div>
+                            <div style='font-size:22px;font-weight:700;color:#0E9F6E'>
+                                %{d['combined_confidence']:.0f}
+                            </div>
+                        </div>
+                    </div>
+                    <div style='display:flex;gap:16px;margin-top:10px'>
+                        <div style='flex:1;background:#F9FAFB;border-radius:6px;padding:8px 10px'>
+                            <div style='font-size:10px;color:#888'>20G ŞABLON</div>
+                            <div style='font-size:13px;color:#1A1A2E'>
+                                Güven: %{r20_data['confidence']:.0f} |
+                                Beklenen: {r20_data['weighted_pct']:+.1f}%
+                            </div>
+                        </div>
+                        <div style='flex:1;background:#F9FAFB;border-radius:6px;padding:8px 10px'>
+                            <div style='font-size:10px;color:#888'>40G ŞABLON</div>
+                            <div style='font-size:13px;color:#1A1A2E'>
+                                Güven: %{r40_data['confidence']:.0f} |
+                                Beklenen: {r40_data['weighted_pct']:+.1f}%
+                            </div>
+                        </div>
+                    </div>
+                    <div style='margin-top:8px;font-size:13px;color:#555'>
+                        Güncel Fiyat: <b>{r20_data['current_price']:.2f} ₺</b> &nbsp;|&nbsp;
+                        Ortalama Hedef Hareket: <b style='color:#0E9F6E'>
+                        +{d['avg_expected_pct']:.1f}%</b>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
     for tab, results, wlabel, fut_label in [
         (tab20, r20, "20 Günlük", "~30 gün"),

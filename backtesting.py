@@ -691,14 +691,358 @@ def fig_monthly_returns(result: BacktestResult) -> go.Figure:
 # STREAMLIT SAYFASI
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════════
+# GRID SEARCH — Otomatik Parametre Optimizasyonu
+# ══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class GridSearchResult:
+    """Tek bir parametre kombinasyonunun sonucu."""
+    params: Dict
+    n_signals: int
+    sharpe: float
+    sortino: float
+    win_rate: float
+    total_return: float
+    max_drawdown: float
+    profit_factor: float
+    psi_correlation: float    # PSI skoru ile getiri korelasyonu
+
+
+def run_grid_search(
+    all_data: Dict[str, pd.DataFrame],
+    find_patterns_fn,
+    psi_values: List[float],
+    conf_bands: List[Tuple[float, float]],
+    window_values: List[int],
+    hold_days: int = 20,
+    init_cap: float = 100_000.0,
+    pos_size: float = 0.10,
+    max_signals_per_combo: int = 100,
+    step_days: int = 5,
+    progress_callback=None,
+) -> List[GridSearchResult]:
+    """
+    Birden fazla parametre kombinasyonunu otomatik dener.
+    Her kombinasyon için: sinyal üret → backtest (sabit süre) → metrik hesapla.
+
+    Toplam kombinasyon = len(psi_values) × len(conf_bands) × len(window_values)
+    Çok büyük gridler süre alır — UI tarafında bu sınırlanır.
+    """
+    results = []
+    combos = [
+        (psi, conf_band, window)
+        for psi in psi_values
+        for conf_band in conf_bands
+        for window in window_values
+    ]
+    total_combos = len(combos)
+
+    for idx, (psi, (conf_lo, conf_hi), window) in enumerate(combos):
+        if progress_callback:
+            progress_callback(idx, total_combos, psi, conf_lo, conf_hi, window)
+
+        try:
+            signals = generate_historical_signals(
+                all_data=all_data,
+                find_patterns_fn=find_patterns_fn,
+                window=window,
+                min_psi=psi,
+                min_confidence=conf_lo,
+                step_days=step_days,
+                max_signals=max_signals_per_combo,
+            )
+            # Üst güven sınırını da uygula (anti-consensus filtresi)
+            signals = [s for s in signals if s.confidence <= conf_hi]
+
+            if len(signals) < 5:
+                results.append(GridSearchResult(
+                    params={'psi': psi, 'conf_band': f"{conf_lo}-{conf_hi}", 'window': window},
+                    n_signals=len(signals), sharpe=0, sortino=0, win_rate=0,
+                    total_return=0, max_drawdown=0, profit_factor=0,
+                    psi_correlation=0,
+                ))
+                continue
+
+            bt = backtest_fixed_hold(signals, all_data, hold_days, init_cap, pos_size)
+
+            # PSI-getiri korelasyonu
+            if bt.trades:
+                psi_scores = np.array([t.signal_score for t in bt.trades])
+                rets = np.array([t.pct_return for t in bt.trades])
+                if np.std(psi_scores) > 0 and np.std(rets) > 0:
+                    corr = float(np.corrcoef(psi_scores, rets)[0, 1])
+                else:
+                    corr = 0.0
+            else:
+                corr = 0.0
+
+            results.append(GridSearchResult(
+                params={'psi': psi, 'conf_band': f"{conf_lo}-{conf_hi}", 'window': window},
+                n_signals=len(signals),
+                sharpe=bt.sharpe,
+                sortino=bt.sortino,
+                win_rate=bt.win_rate,
+                total_return=bt.total_return,
+                max_drawdown=bt.max_drawdown,
+                profit_factor=bt.profit_factor,
+                psi_correlation=round(corr, 3),
+            ))
+        except Exception:
+            results.append(GridSearchResult(
+                params={'psi': psi, 'conf_band': f"{conf_lo}-{conf_hi}", 'window': window},
+                n_signals=0, sharpe=0, sortino=0, win_rate=0,
+                total_return=0, max_drawdown=0, profit_factor=0,
+                psi_correlation=0,
+            ))
+
+    return results
+
+
+def fig_grid_heatmap(grid_results: List[GridSearchResult],
+                     metric: str = 'sharpe') -> go.Figure:
+    """
+    Grid search sonuçlarını ısı haritası olarak göster.
+    X ekseni: güven bandı, Y ekseni: PSI değeri, renk: seçilen metrik.
+    Window değerleri ayrı subplot'larda gösterilir.
+    """
+    windows = sorted(set(r.params['window'] for r in grid_results))
+    n_windows = len(windows)
+
+    fig = make_subplots(
+        rows=1, cols=n_windows,
+        subplot_titles=[f"Window={w}" for w in windows],
+        horizontal_spacing=0.08
+    )
+
+    metric_label = {
+        'sharpe': 'Sharpe Oranı', 'win_rate': 'Kazanç Oranı %',
+        'total_return': 'Toplam Getiri %', 'psi_correlation': 'PSI Korelasyonu'
+    }.get(metric, metric)
+
+    for col_idx, window in enumerate(windows, start=1):
+        subset = [r for r in grid_results if r.params['window'] == window]
+        psi_vals = sorted(set(r.params['psi'] for r in subset))
+        conf_bands = sorted(set(r.params['conf_band'] for r in subset))
+
+        z = []
+        for psi in psi_vals:
+            row = []
+            for cb in conf_bands:
+                match = next((r for r in subset
+                             if r.params['psi'] == psi and r.params['conf_band'] == cb), None)
+                row.append(getattr(match, metric) if match else None)
+            z.append(row)
+
+        fig.add_trace(go.Heatmap(
+            z=z, x=conf_bands, y=[str(p) for p in psi_vals],
+            colorscale='RdYlGn', zmid=0 if metric in ('sharpe','total_return','psi_correlation') else None,
+            text=[[f"{v:.2f}" if v is not None else "" for v in row] for row in z],
+            texttemplate='%{text}', textfont_size=9,
+            showscale=(col_idx == n_windows),
+            hovertemplate='PSI: %{y}<br>Güven: %{x}<br>' + metric_label + ': %{z:.2f}<extra></extra>'
+        ), row=1, col=col_idx)
+
+    fig.update_layout(
+        template='plotly_white',
+        paper_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=10, r=10, t=50, b=10),
+        height=320,
+        title=dict(text=f'Grid Search Isı Haritası — {metric_label}',
+                  font=dict(size=13, color='#1A1A2E')),
+    )
+    for i in range(1, n_windows + 1):
+        fig.update_xaxes(title='Güven Bandı', row=1, col=i, tickfont=dict(size=9))
+        if i == 1:
+            fig.update_yaxes(title='Min PSI', row=1, col=i)
+
+    return fig
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# WALK-FORWARD BACKTESTING — Overfitting Kontrolü
+# ══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class WalkForwardPeriod:
+    """Tek bir zaman dilimi sonucu."""
+    period_label: str
+    start_date: str
+    end_date: str
+    n_signals: int
+    sharpe: float
+    win_rate: float
+    total_return: float
+    max_drawdown: float
+
+
+def run_walk_forward(
+    all_data: Dict[str, pd.DataFrame],
+    find_patterns_fn,
+    window: int,
+    min_psi: float,
+    min_confidence: float,
+    max_confidence: float,
+    n_periods: int = 3,
+    hold_days: int = 20,
+    init_cap: float = 100_000.0,
+    pos_size: float = 0.10,
+    progress_callback=None,
+) -> List[WalkForwardPeriod]:
+    """
+    Veriyi `n_periods` eşit zaman dilimine böler, her dilimde AYNI parametrelerle
+    ayrı backtest çalıştırır. Sonuçların tutarlılığı, parametrelerin belirli bir
+    döneme aşırı uyum (overfitting) göstermediğinin kanıtıdır.
+
+    Mantık: Her hissenin veri serisini n_periods parçaya böl, her parçayı
+    bağımsız bir "mini evren" gibi ele alıp sinyal üret + backtest yap.
+    """
+    # Tüm hisselerin ortak tarih aralığını bul
+    all_dates = []
+    for df in all_data.values():
+        if len(df) > 0:
+            all_dates.append((df.index.min(), df.index.max()))
+
+    if not all_dates:
+        return []
+
+    global_start = max(d[0] for d in all_dates)
+    global_end = min(d[1] for d in all_dates)
+    total_days = (global_end - global_start).days
+
+    if total_days < n_periods * 60:
+        n_periods = max(1, total_days // 60)
+
+    period_length = total_days // n_periods
+    results = []
+
+    for p_idx in range(n_periods):
+        if progress_callback:
+            progress_callback(p_idx, n_periods)
+
+        period_start = global_start + pd.Timedelta(days=p_idx * period_length)
+        period_end = global_start + pd.Timedelta(days=(p_idx + 1) * period_length)
+        if p_idx == n_periods - 1:
+            period_end = global_end
+
+        # Bu döneme ait alt-veri setini oluştur
+        period_data = {}
+        for ticker, df in all_data.items():
+            sub = df.loc[(df.index >= period_start) & (df.index <= period_end)]
+            if len(sub) >= window * 3:
+                period_data[ticker] = sub
+
+        if len(period_data) < 5:
+            results.append(WalkForwardPeriod(
+                period_label=f"Dönem {p_idx+1}",
+                start_date=period_start.strftime('%d.%m.%Y'),
+                end_date=period_end.strftime('%d.%m.%Y'),
+                n_signals=0, sharpe=0, win_rate=0, total_return=0, max_drawdown=0,
+            ))
+            continue
+
+        try:
+            signals = generate_historical_signals(
+                all_data=period_data,
+                find_patterns_fn=find_patterns_fn,
+                window=window,
+                min_psi=min_psi,
+                min_confidence=min_confidence,
+                step_days=5,
+                max_signals=80,
+            )
+            signals = [s for s in signals if s.confidence <= max_confidence]
+
+            if len(signals) < 3:
+                results.append(WalkForwardPeriod(
+                    period_label=f"Dönem {p_idx+1}",
+                    start_date=period_start.strftime('%d.%m.%Y'),
+                    end_date=period_end.strftime('%d.%m.%Y'),
+                    n_signals=len(signals), sharpe=0, win_rate=0,
+                    total_return=0, max_drawdown=0,
+                ))
+                continue
+
+            bt = backtest_fixed_hold(signals, period_data, hold_days, init_cap, pos_size)
+
+            results.append(WalkForwardPeriod(
+                period_label=f"Dönem {p_idx+1}",
+                start_date=period_start.strftime('%d.%m.%Y'),
+                end_date=period_end.strftime('%d.%m.%Y'),
+                n_signals=len(signals),
+                sharpe=bt.sharpe,
+                win_rate=bt.win_rate,
+                total_return=bt.total_return,
+                max_drawdown=bt.max_drawdown,
+            ))
+        except Exception:
+            results.append(WalkForwardPeriod(
+                period_label=f"Dönem {p_idx+1}",
+                start_date=period_start.strftime('%d.%m.%Y'),
+                end_date=period_end.strftime('%d.%m.%Y'),
+                n_signals=0, sharpe=0, win_rate=0, total_return=0, max_drawdown=0,
+            ))
+
+    return results
+
+
+def fig_walk_forward_consistency(periods: List[WalkForwardPeriod]) -> go.Figure:
+    """Dönemler arası Sharpe ve Win Rate tutarlılığını göster."""
+    labels = [f"{p.period_label}\n{p.start_date[3:]}" for p in periods]
+    sharpes = [p.sharpe for p in periods]
+    win_rates = [p.win_rate for p in periods]
+
+    fig = make_subplots(rows=1, cols=2, subplot_titles=['Sharpe Oranı', 'Kazanç Oranı %'])
+
+    colors_sharpe = ['#0E9F6E' if s > 0 else '#E02424' for s in sharpes]
+    fig.add_trace(go.Bar(x=labels, y=sharpes, marker_color=colors_sharpe,
+                         text=[f"{s:.2f}" for s in sharpes], textposition='outside',
+                         showlegend=False), row=1, col=1)
+
+    colors_wr = ['#0E9F6E' if w >= 50 else '#E3A008' for w in win_rates]
+    fig.add_trace(go.Bar(x=labels, y=win_rates, marker_color=colors_wr,
+                         text=[f"{w:.0f}%" for w in win_rates], textposition='outside',
+                         showlegend=False), row=1, col=2)
+
+    fig.add_hline(y=0, line_dash='dash', line_color='rgba(0,0,0,0.2)', row=1, col=1)
+    fig.add_hline(y=50, line_dash='dash', line_color='rgba(0,0,0,0.2)', row=1, col=2)
+
+    fig.update_layout(
+        template='plotly_white',
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='#FFFFFF',
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=300,
+        title=dict(text='Walk-Forward Tutarlılık Analizi', font=dict(size=13, color='#1A1A2E')),
+    )
+    return fig
+
+
 def render_backtest(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict):
     st.markdown("## 📊 Backtesting Motoru")
     st.caption(
-        "BIST-PSI algoritmasının geçmişteki isabetini ölç. "
-        "İki çıkış stratejisini karşılaştır."
+        "BIST-PSI algoritmasının geçmişteki isabetini ölç, parametreleri "
+        "otomatik optimize et, tutarlılığı doğrula."
     )
     st.divider()
 
+    tab_manual, tab_grid, tab_walk = st.tabs([
+        "🎯 Manuel Backtest",
+        "🔬 Grid Search (Otomatik Optimizasyon)",
+        "🚶 Walk-Forward (Tutarlılık Testi)"
+    ])
+
+    with tab_manual:
+        _render_manual_backtest(fetch_batch_fn, find_patterns_fn, all_bist_lists)
+
+    with tab_grid:
+        _render_grid_search(fetch_batch_fn, find_patterns_fn, all_bist_lists)
+
+    with tab_walk:
+        _render_walk_forward(fetch_batch_fn, find_patterns_fn, all_bist_lists)
+
+
+def _render_manual_backtest(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict):
     # Parametreler
     st.markdown("### ⚙️ Parametreler")
     col1, col2, col3 = st.columns(3)
@@ -731,6 +1075,7 @@ def render_backtest(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict):
     """, unsafe_allow_html=True)
 
     run_btn = st.button("▶️ Backtesti Başlat", type="primary",
+
                         use_container_width=False)
 
     if run_btn:
@@ -986,3 +1331,281 @@ def render_backtest(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict):
             f"Güven bandı **{best_conf_band}** (ort. getiri {best_conf_ret:+.1f}%). "
             f"Bu bandları Pattern Matcher ve Fırsat Tarayıcı'da kullanın."
         )
+
+
+def _render_grid_search(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict):
+    st.markdown("### 🔬 Otomatik Parametre Optimizasyonu")
+    st.caption(
+        "Birden fazla PSI eşiği, güven bandı ve şablon uzunluğu kombinasyonunu "
+        "otomatik dener. Hangi kombinasyonun en yüksek Sharpe/kazanç oranını "
+        "verdiğini ısı haritası ile gösterir."
+    )
+
+    gc1, gc2 = st.columns(2)
+    with gc1:
+        g_scope = st.selectbox("Hisse Evreni", ["BIST 30", "BIST 100"], index=0,
+                               key="grid_scope",
+                               help="Grid search çok sayıda kombinasyon test ettiği için BIST 30 önerilir")
+        g_hold_days = st.slider("Sabit Tutma Süresi (gün)", 5, 40, 20, 5, key="grid_hold")
+    with gc2:
+        g_init_cap = st.number_input("Başlangıç Sermayesi ₺", min_value=10_000,
+                                     max_value=10_000_000, value=100_000,
+                                     step=10_000, key="grid_cap")
+        g_max_signals = st.slider("Kombinasyon Başına Maks Sinyal", 30, 150, 60, 10,
+                                  key="grid_maxsig",
+                                  help="Düşük tutmak grid search'ü hızlandırır")
+
+    st.markdown("##### Test Edilecek Değer Aralıkları")
+    pc1, pc2, pc3 = st.columns(3)
+    with pc1:
+        psi_options = st.multiselect(
+            "PSI Eşikleri", [65, 70, 75, 80, 85],
+            default=[70, 75, 80], key="grid_psi_vals"
+        )
+    with pc2:
+        conf_band_options = st.multiselect(
+            "Güven Bandı Seçenekleri",
+            ["45-60", "50-65", "55-68", "60-75"],
+            default=["50-65", "55-68"], key="grid_conf_vals"
+        )
+    with pc3:
+        window_options = st.multiselect(
+            "Şablon Uzunlukları", [10, 15, 20, 30, 40],
+            default=[20, 30], key="grid_window_vals"
+        )
+
+    n_combos = len(psi_options) * len(conf_band_options) * len(window_options)
+    if n_combos > 0:
+        est_minutes = n_combos * 0.7  # kabaca tahmin
+        st.info(f"📊 **{n_combos}** kombinasyon test edilecek. Tahmini süre: ~{est_minutes:.0f} dakika.")
+
+    if n_combos > 24:
+        st.warning("⚠️ 24'ten fazla kombinasyon önerilmez — süre çok uzayabilir. Seçimleri azaltın.")
+
+    grid_btn = st.button("🔬 Grid Search Başlat", type="primary",
+                         disabled=(n_combos == 0 or n_combos > 24))
+
+    if grid_btn:
+        conf_bands_parsed = []
+        for cb in conf_band_options:
+            lo, hi = cb.split("-")
+            conf_bands_parsed.append((float(lo), float(hi)))
+
+        scope_map = {"BIST 30": all_bist_lists['bist30'], "BIST 100": all_bist_lists['bist100']}
+        tickers = scope_map[g_scope]
+
+        prog = st.progress(0, text="Veriler yükleniyor...")
+        with st.spinner(""):
+            all_data = fetch_batch_fn(tickers, period="2y")
+        prog.progress(10, text=f"{len(all_data)} hisse yüklendi. Grid search başlıyor...")
+
+        def _progress_cb(idx, total, psi, conf_lo, conf_hi, window):
+            pct = 10 + int((idx / total) * 85)
+            prog.progress(pct, text=f"Test: PSI={psi}, Güven={conf_lo}-{conf_hi}, "
+                                    f"Window={window} ({idx+1}/{total})")
+
+        grid_results = run_grid_search(
+            all_data=all_data,
+            find_patterns_fn=find_patterns_fn,
+            psi_values=psi_options,
+            conf_bands=conf_bands_parsed,
+            window_values=window_options,
+            hold_days=g_hold_days,
+            init_cap=g_init_cap,
+            max_signals_per_combo=g_max_signals,
+            progress_callback=_progress_cb,
+        )
+
+        prog.progress(100, text="✅ Grid search tamamlandı!")
+        import time; time.sleep(0.3); prog.empty()
+
+        st.session_state['grid_results'] = grid_results
+        st.rerun()
+
+    grid_results = st.session_state.get('grid_results')
+    if not grid_results:
+        st.info("Değer aralıklarını seçip 'Grid Search Başlat' butonuna basın.")
+        return
+
+    st.divider()
+    st.markdown(f"#### 📋 Sonuçlar — {len(grid_results)} kombinasyon test edildi")
+
+    # En iyi kombinasyonlar
+    valid_results = [r for r in grid_results if r.n_signals >= 5]
+    if not valid_results:
+        st.warning("Hiçbir kombinasyonda yeterli sinyal üretilemedi (min 5 sinyal gerekli).")
+        return
+
+    sorted_by_sharpe = sorted(valid_results, key=lambda r: r.sharpe, reverse=True)
+    best = sorted_by_sharpe[0]
+
+    bc1, bc2, bc3, bc4 = st.columns(4)
+    bc1.metric("🏆 En İyi PSI", f"{best.params['psi']}")
+    bc2.metric("🏆 En İyi Güven Bandı", best.params['conf_band'])
+    bc3.metric("🏆 En İyi Window", f"{best.params['window']} gün")
+    bc4.metric("🏆 Sharpe", f"{best.sharpe:.2f}")
+
+    st.success(
+        f"✅ **Önerilen parametre kombinasyonu:** PSI={best.params['psi']}, "
+        f"Güven={best.params['conf_band']}, Window={best.params['window']} gün — "
+        f"Sharpe: {best.sharpe:.2f}, Kazanç Oranı: %{best.win_rate:.0f}, "
+        f"Toplam Getiri: {best.total_return:+.1f}%, Sinyal Sayısı: {best.n_signals}"
+    )
+
+    # Isı haritaları
+    st.markdown("##### 🗺️ Isı Haritaları")
+    heatmap_metric = st.radio(
+        "Metrik", ["sharpe", "win_rate", "total_return", "psi_correlation"],
+        format_func=lambda x: {
+            'sharpe': 'Sharpe Oranı', 'win_rate': 'Kazanç Oranı',
+            'total_return': 'Toplam Getiri', 'psi_correlation': 'PSI Korelasyonu'
+        }[x],
+        horizontal=True, key="grid_heatmap_metric"
+    )
+    st.plotly_chart(fig_grid_heatmap(grid_results, heatmap_metric),
+                    use_container_width=True)
+
+    # Detaylı tablo
+    st.markdown("##### 📊 Tüm Sonuçlar")
+    table_rows = []
+    for r in sorted_by_sharpe:
+        table_rows.append({
+            'PSI': r.params['psi'],
+            'Güven Bandı': r.params['conf_band'],
+            'Window': r.params['window'],
+            'Sinyal #': r.n_signals,
+            'Sharpe': f"{r.sharpe:.2f}",
+            'Sortino': f"{r.sortino:.2f}",
+            'Kazanç %': f"{r.win_rate:.0f}",
+            'Toplam Getiri': f"{r.total_return:+.1f}%",
+            'Max DD': f"-{r.max_drawdown:.1f}%",
+            'Profit Factor': f"{r.profit_factor:.2f}",
+            'PSI Korelasyon': f"{r.psi_correlation:+.3f}",
+        })
+    st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+
+
+def _render_walk_forward(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict):
+    st.markdown("### 🚶 Walk-Forward Tutarlılık Testi")
+    st.caption(
+        "Aynı parametrelerle veriyi birden fazla zaman dilimine bölüp ayrı ayrı "
+        "test eder. Sonuçlar dönemler arasında tutarlıysa (hepsi pozitif Sharpe, "
+        "benzer kazanç oranı), parametreleriniz overfitting değil — gerçekten "
+        "genelleşebilir bir kalıp yakalamış demektir."
+    )
+
+    wc1, wc2, wc3 = st.columns(3)
+    with wc1:
+        w_scope = st.selectbox("Hisse Evreni", ["BIST 30", "BIST 100"], index=0, key="wf_scope")
+        w_window = st.selectbox("Şablon Uzunluğu", [10, 20, 30, 40], index=1, key="wf_window")
+    with wc2:
+        w_psi = st.slider("Min PSI", 55, 85, 80, 1, key="wf_psi")
+        w_conf_lo = st.slider("Min Güven %", 40, 70, 55, 1, key="wf_conf_lo")
+    with wc3:
+        w_conf_hi = st.slider("Maks Güven %", 60, 90, 68, 1, key="wf_conf_hi")
+        w_n_periods = st.slider("Dönem Sayısı", 2, 6, 3, 1, key="wf_periods",
+                                help="Veri bu kadar eşit parçaya bölünür")
+
+    w_hold_days = st.slider("Sabit Tutma Süresi (gün)", 5, 40, 20, 5, key="wf_hold")
+    w_init_cap = st.number_input("Başlangıç Sermayesi ₺ (dönem başına)",
+                                 min_value=10_000, max_value=10_000_000,
+                                 value=100_000, step=10_000, key="wf_cap")
+
+    st.markdown("""
+    <div style='background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;
+                padding:10px 14px;font-size:12px;color:#1E40AF;margin:8px 0'>
+        💡 Önce <b>Grid Search</b> sekmesinde en iyi parametreleri bulun,
+        sonra burada o parametrelerle tutarlılığı doğrulayın.
+    </div>
+    """, unsafe_allow_html=True)
+
+    wf_btn = st.button("🚶 Walk-Forward Testi Başlat", type="primary")
+
+    if wf_btn:
+        scope_map = {"BIST 30": all_bist_lists['bist30'], "BIST 100": all_bist_lists['bist100']}
+        tickers = scope_map[w_scope]
+
+        prog = st.progress(0, text="Veriler yükleniyor...")
+        with st.spinner(""):
+            all_data = fetch_batch_fn(tickers, period="2y")
+        prog.progress(15, text=f"{len(all_data)} hisse yüklendi. Dönemlere bölünüyor...")
+
+        def _wf_progress(p_idx, n_periods):
+            pct = 15 + int((p_idx / n_periods) * 80)
+            prog.progress(pct, text=f"Dönem {p_idx+1}/{n_periods} test ediliyor...")
+
+        wf_results = run_walk_forward(
+            all_data=all_data,
+            find_patterns_fn=find_patterns_fn,
+            window=w_window,
+            min_psi=w_psi,
+            min_confidence=w_conf_lo,
+            max_confidence=w_conf_hi,
+            n_periods=w_n_periods,
+            hold_days=w_hold_days,
+            init_cap=w_init_cap,
+            progress_callback=_wf_progress,
+        )
+
+        prog.progress(100, text="✅ Walk-forward testi tamamlandı!")
+        import time; time.sleep(0.3); prog.empty()
+
+        st.session_state['wf_results'] = wf_results
+        st.rerun()
+
+    wf_results = st.session_state.get('wf_results')
+    if not wf_results:
+        st.info("Parametreleri ayarlayıp 'Walk-Forward Testi Başlat' butonuna basın.")
+        return
+
+    st.divider()
+    st.markdown(f"#### 📋 Sonuçlar — {len(wf_results)} dönem")
+
+    # Tutarlılık değerlendirmesi
+    valid_periods = [p for p in wf_results if p.n_signals >= 3]
+    if len(valid_periods) >= 2:
+        sharpes = [p.sharpe for p in valid_periods]
+        win_rates = [p.win_rate for p in valid_periods]
+        positive_sharpe_count = sum(1 for s in sharpes if s > 0)
+        sharpe_std = float(np.std(sharpes))
+        avg_win_rate = float(np.mean(win_rates))
+
+        consistency_pct = positive_sharpe_count / len(valid_periods) * 100
+
+        if consistency_pct >= 75 and sharpe_std < 1.5:
+            st.success(
+                f"✅ **Yüksek Tutarlılık**: {len(valid_periods)} dönemin "
+                f"{positive_sharpe_count}'ünde pozitif Sharpe (%{consistency_pct:.0f}). "
+                f"Ortalama kazanç oranı: %{avg_win_rate:.0f}. "
+                f"Bu parametreler overfitting değil, genelleşebilir görünüyor."
+            )
+        elif consistency_pct >= 50:
+            st.warning(
+                f"⚠️ **Orta Tutarlılık**: {len(valid_periods)} dönemin "
+                f"{positive_sharpe_count}'ünde pozitif Sharpe (%{consistency_pct:.0f}). "
+                f"Bazı dönemlerde zayıf performans var — dikkatli kullanın."
+            )
+        else:
+            st.error(
+                f"❌ **Düşük Tutarlılık**: Sadece {positive_sharpe_count}/{len(valid_periods)} "
+                f"dönemde pozitif Sharpe (%{consistency_pct:.0f}). "
+                f"Bu parametreler muhtemelen belirli bir döneme özel optimize "
+                f"edilmiş (overfitting riski yüksek). Farklı parametreler deneyin."
+            )
+
+    st.plotly_chart(fig_walk_forward_consistency(wf_results), use_container_width=True)
+
+    st.markdown("##### 📊 Dönem Detayları")
+    period_rows = []
+    for p in wf_results:
+        period_rows.append({
+            'Dönem': p.period_label,
+            'Başlangıç': p.start_date,
+            'Bitiş': p.end_date,
+            'Sinyal #': p.n_signals,
+            'Sharpe': f"{p.sharpe:.2f}",
+            'Kazanç %': f"{p.win_rate:.0f}",
+            'Toplam Getiri': f"{p.total_return:+.1f}%",
+            'Max DD': f"-{p.max_drawdown:.1f}%",
+        })
+    st.dataframe(pd.DataFrame(period_rows), use_container_width=True, hide_index=True)

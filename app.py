@@ -7,6 +7,7 @@ from template_library import (
 )
 from backtesting import render_backtest
 from portfolio import render_portfolio, render_add_to_portfolio_button
+from feedback import render_feedback_buttons, render_feedback_summary_page
 from character_similarity import (
     build_character_profile, character_similarity,
     future_behavior_compatibility, historical_correlation, correlation_score
@@ -1316,7 +1317,8 @@ def render_telegram_setup():
 def main():
     _pages = ["🔍 Pattern Matcher", "🔭 Fırsat Tarayıcı",
               "📚 Şablon Kütüphanesi", "📊 Backtesting",
-              "💼 Portföy Simülasyonu", "🔔 Telegram Bildirimleri"]
+              "💼 Portföy Simülasyonu", "🗳️ Geri Bildirim",
+              "🔔 Telegram Bildirimleri"]
 
     _goto = st.session_state.pop('_goto_page', None)
     if _goto and _goto in _pages:
@@ -1350,6 +1352,10 @@ def main():
 
     if page == "🔔 Telegram Bildirimleri":
         render_telegram_setup()
+        return
+
+    if page == "🗳️ Geri Bildirim":
+        render_feedback_summary_page()
         return
 
     if page == "💼 Portföy Simülasyonu":
@@ -2010,6 +2016,27 @@ def main():
                     s1.metric("Sonraki", f"{sel['fut_pct']:+.1f}%")
                     s2.metric("Maks ↑", f"+{sel['fut_max']:.1f}%")
                     s3.metric("Maks ↓", f"{sel['fut_min']:.1f}%")
+
+                    st.divider()
+                    st.markdown("##### 🗳️ Bu Eşleşme Hakkında Görüşünüz")
+                    st.caption(
+                        "Bu eşleşme gerçekten anlamlı görünüyor mu? Geri bildiriminiz "
+                        "'🗳️ Geri Bildirim' sayfasında biriktirilir ve hangi analiz "
+                        "boyutlarının güvenilir olduğunu görmenize yardımcı olur."
+                    )
+                    render_feedback_buttons(
+                        symbol=sym,
+                        ticker=selected,
+                        similarity=sel['similarity'],
+                        breakdown=sel.get('breakdown', {}),
+                        fut_pct=sel['fut_pct'],
+                        char_score=sel.get('char_score'),
+                        fut_compat=sel.get('fut_compat'),
+                        corr_score=sel.get('corr_score'),
+                        regime_match=sel.get('regime_match'),
+                        source_page="Pattern Matcher",
+                        key_suffix="pm_tab4"
+                    )
             with tab5:
                 psi_details = st.session_state.get('psi_details', {})
                 psi = psi_details.get(selected)
