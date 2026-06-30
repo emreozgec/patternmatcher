@@ -27,7 +27,9 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-#MainMenu, footer, header { visibility: hidden; }
+#MainMenu, footer { visibility: hidden; }
+header { visibility: visible !important; background: transparent !important; }
+header [data-testid="stHeader"] { background: transparent !important; }
 .block-container { padding-top: 1.5rem; }
 .stButton > button { border-radius: 6px; font-weight: 500; }
 [data-testid="metric-container"] {
@@ -35,6 +37,17 @@ st.markdown("""
     border: 1px solid #E5E9F0;
     border-radius: 8px;
     padding: 12px !important;
+}
+/* Mobilde sidebar açma okunu belirgin yap */
+[data-testid="collapsedControl"] {
+    visibility: visible !important;
+    display: block !important;
+    background: #1A56DB !important;
+    border-radius: 0 8px 8px 0 !important;
+    opacity: 1 !important;
+}
+[data-testid="collapsedControl"] svg {
+    fill: #FFFFFF !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1301,19 +1314,39 @@ def render_telegram_setup():
 
 
 def main():
-    # Navigasyon
+    _pages = ["🔍 Pattern Matcher", "🔭 Fırsat Tarayıcı",
+              "📚 Şablon Kütüphanesi", "📊 Backtesting",
+              "💼 Portföy Simülasyonu", "🔔 Telegram Bildirimleri"]
+
+    _goto = st.session_state.pop('_goto_page', None)
+    if _goto and _goto in _pages:
+        st.session_state['current_page'] = _goto
+    if 'current_page' not in st.session_state:
+        st.session_state['current_page'] = _pages[0]
+
+    current_idx = _pages.index(st.session_state['current_page'])
+
+    def _on_page_change_mobile():
+        st.session_state['current_page'] = st.session_state['page_nav_mobile']
+
+    def _on_page_change_sidebar():
+        st.session_state['current_page'] = st.session_state['page_nav_sidebar']
+
+    # Mobil cihazlarda sidebar görünmeyebilir — üstte de yedek navigasyon göster
+    with st.expander("📌 Sayfa Seç (sidebar görünmüyorsa buradan geçin)", expanded=False):
+        st.radio("", _pages, index=current_idx,
+                 label_visibility="collapsed", key="page_nav_mobile",
+                 on_change=_on_page_change_mobile)
+
+    # Navigasyon — sidebar (masaüstünde birincil)
     with st.sidebar:
         st.markdown("### 📌 Sayfa")
-        # Yönlendirme isteği varsa index'i ayarla
-        _goto = st.session_state.pop('_goto_page', None)
-        _pages = ["🔍 Pattern Matcher", "🔭 Fırsat Tarayıcı",
-                  "📚 Şablon Kütüphanesi", "📊 Backtesting",
-                  "💼 Portföy Simülasyonu", "🔔 Telegram Bildirimleri"]
-        _default_idx = _pages.index(_goto) if _goto and _goto in _pages else 0
-        page = st.radio("", _pages,
-                        index=_default_idx,
-                        label_visibility="collapsed", key="page_nav")
+        st.radio("", _pages, index=current_idx,
+                 label_visibility="collapsed", key="page_nav_sidebar",
+                 on_change=_on_page_change_sidebar)
         st.divider()
+
+    page = st.session_state['current_page']
 
     if page == "🔔 Telegram Bildirimleri":
         render_telegram_setup()
