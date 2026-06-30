@@ -1056,12 +1056,13 @@ def _render_manual_backtest(fetch_batch_fn, find_patterns_fn, all_bist_lists: Di
     col1, col2, col3 = st.columns(3)
     with col1:
         scope      = st.selectbox("Hisse Evreni", ["BIST 30","BIST 100","Tüm BIST"], index=0)
-        window     = st.selectbox("Şablon Uzunluğu", [10, 20, 30, 40], index=1)
-        min_psi    = st.slider("Min BIST-PSI", 55, 85, 80, 1,
-                        help="Optimal bant: 80+ (%%61 kazanç, +4.6%%)")
+        window     = st.selectbox("Şablon Uzunluğu", [10, 20, 30, 40], index=2,
+                       help="Grid Search: 30 gün kategorik olarak en iyi (Sharpe 6.92 vs 3.5)")
+        min_psi    = st.slider("Min BIST-PSI", 55, 85, 70, 1,
+                        help="Grid Search doğrulaması: PSI ~70 optimal (Sharpe 6.92, %%69 kazanç)")
     with col2:
-        min_conf   = st.slider("Min Güven %", 40, 80, 55, 1,
-                        help="Optimal bant: 55-65 (%%66 kazanç, +5.2%%)")
+        min_conf   = st.slider("Min Güven %", 40, 80, 50, 1,
+                        help="Grid Search: 50-65 bandı optimal (%%69 kazanç, +31.2%%)")
         hold_days  = st.slider("Sabit Tutma (gün)", 5, 60, 20, 5)
         pos_size   = st.slider("Pozisyon Büyüklüğü %", 5, 25, 10, 5) / 100
     with col3:
@@ -1363,6 +1364,23 @@ def _render_grid_search(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict):
                                   key="grid_maxsig",
                                   help="Düşük tutmak grid search'ü hızlandırır")
 
+    st.markdown("##### 📅 Veri Dönemi")
+    st.caption(
+        "Walk-Forward testinde performans son dönemde düştüyse, sadece o "
+        "dönemi seçip parametreleri güncel piyasaya göre yeniden optimize edebilirsiniz."
+    )
+    g_period_mode = st.radio(
+        "Test edilecek dönem:",
+        ["Tüm Veri (2 yıl)", "Sadece Son Dönem"],
+        horizontal=True, key="grid_period_mode"
+    )
+    g_recent_days = None
+    if g_period_mode == "Sadece Son Dönem":
+        g_recent_days = st.slider(
+            "Son kaç gün?", 60, 365, 240, 30, key="grid_recent_days",
+            help="Örn. Walk-Forward'daki son dönemle kıyaslamak için ~240 gün (8 ay) seçin"
+        )
+
     st.markdown("##### Test Edilecek Değer Aralıkları")
     pc1, pc2, pc3 = st.columns(3)
     with pc1:
@@ -1405,7 +1423,22 @@ def _render_grid_search(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict):
         prog = st.progress(0, text="Veriler yükleniyor...")
         with st.spinner(""):
             all_data = fetch_batch_fn(tickers, period="2y")
-        prog.progress(10, text=f"{len(all_data)} hisse yüklendi. Grid search başlıyor...")
+
+        # Sadece son dönem seçildiyse veriyi kırp
+        if g_recent_days is not None:
+            trimmed = {}
+            for ticker, df in all_data.items():
+                if len(df) == 0:
+                    continue
+                cutoff = df.index.max() - pd.Timedelta(days=g_recent_days)
+                sub = df.loc[df.index >= cutoff]
+                if len(sub) >= 40:  # Anlamlı analiz için minimum veri
+                    trimmed[ticker] = sub
+            all_data = trimmed
+            prog.progress(10, text=f"{len(all_data)} hisse — son {g_recent_days} gün filtrelendi. "
+                                   f"Grid search başlıyor...")
+        else:
+            prog.progress(10, text=f"{len(all_data)} hisse yüklendi. Grid search başlıyor...")
 
         def _progress_cb(idx, total, psi, conf_lo, conf_hi, window):
             pct = 10 + int((idx / total) * 85)
@@ -1428,6 +1461,9 @@ def _render_grid_search(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict):
         import time; time.sleep(0.3); prog.empty()
 
         st.session_state['grid_results'] = grid_results
+        st.session_state['grid_period_label'] = (
+            f"Son {g_recent_days} gün" if g_recent_days is not None else "Tüm Veri (2 yıl)"
+        )
         st.rerun()
 
     grid_results = st.session_state.get('grid_results')
@@ -1436,7 +1472,9 @@ def _render_grid_search(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict):
         return
 
     st.divider()
+    period_label = st.session_state.get('grid_period_label', 'Tüm Veri')
     st.markdown(f"#### 📋 Sonuçlar — {len(grid_results)} kombinasyon test edildi")
+    st.caption(f"📅 Test edilen dönem: **{period_label}**")
 
     # En iyi kombinasyonlar
     valid_results = [r for r in grid_results if r.n_signals >= 5]
@@ -1505,12 +1543,13 @@ def _render_walk_forward(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict)
     wc1, wc2, wc3 = st.columns(3)
     with wc1:
         w_scope = st.selectbox("Hisse Evreni", ["BIST 30", "BIST 100"], index=0, key="wf_scope")
-        w_window = st.selectbox("Şablon Uzunluğu", [10, 20, 30, 40], index=1, key="wf_window")
+        w_window = st.selectbox("Şablon Uzunluğu", [10, 20, 30, 40], index=2, key="wf_window",
+                       help="Grid Search: 30 gün en iyi sonucu verdi")
     with wc2:
-        w_psi = st.slider("Min PSI", 55, 85, 80, 1, key="wf_psi")
-        w_conf_lo = st.slider("Min Güven %", 40, 70, 55, 1, key="wf_conf_lo")
+        w_psi = st.slider("Min PSI", 55, 85, 70, 1, key="wf_psi")
+        w_conf_lo = st.slider("Min Güven %", 40, 70, 50, 1, key="wf_conf_lo")
     with wc3:
-        w_conf_hi = st.slider("Maks Güven %", 60, 90, 68, 1, key="wf_conf_hi")
+        w_conf_hi = st.slider("Maks Güven %", 60, 90, 65, 1, key="wf_conf_hi")
         w_n_periods = st.slider("Dönem Sayısı", 2, 6, 3, 1, key="wf_periods",
                                 help="Veri bu kadar eşit parçaya bölünür")
 
