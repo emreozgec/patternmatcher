@@ -350,7 +350,6 @@ def render_scanner(all_data_getter, bist_lists):
             xu100_raw = yf.download("XU100.IS", period="2y",
                                     auto_adjust=True, progress=False, threads=False)
             if xu100_raw is not None and not xu100_raw.empty:
-                import pandas as pd
                 if isinstance(xu100_raw.columns, pd.MultiIndex):
                     xu100_raw.columns = xu100_raw.columns.get_level_values(0)
                 index_closes = xu100_raw['Close'].values.astype(float)
