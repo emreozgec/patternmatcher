@@ -1,376 +1,43 @@
-"""
-daily_scan.py — Günlük Otomatik Tarama + Telegram Bildirimi
-
-GitHub Actions tarafından her gün belirli saatte çalıştırılır.
-Streamlit'ten BAĞIMSIZ çalışır (Streamlit Cloud sürekli açık kalmadığı için).
-
-Akış:
-1. BIST hisselerinin verisini çek (yfinance)
-2. scanner.py'deki scan_single_ticker mantığını kullanarak tara
-3. Backtesting'den gelen optimal parametreleri uygula (PSI 80+, Güven 55-68)
-4. Bulunan fırsatları Telegram'a gönder
-
-Ortam değişkenleri (.env veya GitHub Secrets üzerinden):
-    TELEGRAM_BOT_TOKEN : BotFather'dan alınan token
-    TELEGRAM_CHAT_ID   : Bildirim gönderilecek chat/kanal ID'si
-"""
-
-import os
-import sys
-import json
-import time
-import numpy as np
-import pandas as pd
-import yfinance as yf
-import requests
-from datetime import datetime, timedelta
-
-# ── Proje modüllerini import edebilmek için path ekle ──────────────────────────
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from scanner import scan_single_ticker
-
-# ══════════════════════════════════════════════════════════════════════════════
-# AYARLAR — Backtesting'den gelen optimal parametreler
-# ══════════════════════════════════════════════════════════════════════════════
-
-MIN_SIM        = 80    # PSI 80+ optimal bant (backtesting: %61 kazanç)
-MIN_CONFIDENCE = 55    # Güven 55-65 bandı optimal (backtesting: %66 kazanç)
-MAX_CONFIDENCE = 68    # Anti-consensus filtresi
-SCAN_SCOPE     = "BIST100"   # BIST30 / BIST100 / ALL — GitHub Actions süresi için BIST100 önerilir
-WINDOWS        = [20, 40]    # Kısa ve orta vadeli şablon uzunlukları
-
-# ── Tekrar bildirim önleme ──────────────────────────────────────────────────
-# Aynı hisse+vade için, bu kadar saat içinde tekrar sinyal geldiyse tekrar
-# Telegram'a gönderilmez. Tarama her 2 saatte bir çalıştığı için varsayılan
-# 8 saat, bir sinyalin aynı gün içinde en fazla ~2 kez bildirilmesini sağlar.
-DEDUP_HOURS = float(os.environ.get("DEDUP_HOURS", "8"))
-
-# Gönderim geçmişinin tutulduğu dosya (workflow bu dosyayı commit'leyerek kalıcı hale getirir)
-HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sent_signals.json")
-
-# ── BIST listeleri (app.py ile aynı) ───────────────────────────────────────────
-
-BIST30 = ["AKBNK","ARCLK","ASELS","BIMAS","EKGYO","EREGL","FROTO","GARAN","HALKB",
-          "ISCTR","KCHOL","KOZAA","KOZAL","KRDMD","MGROS","ODAS","PETKM","PGSUS",
-          "SAHOL","SISE","SOKM","TAVHL","TCELL","THYAO","TKFEN","TOASO","TTKOM",
-          "TUPRS","VAKBN","YKBNK"]
-
-BIST100 = list(set(BIST30 + [
-    "AEFES","AGESA","AKGRT","AKSA","AKSEN","ALARK","ALBRK","ALFAS","ANELE",
-    "ANHYT","ANSGR","ASTOR","AYGAZ","BAGFS","BERA","BFREN","BRISA","BTCIM",
-    "BUCIM","CIMSA","CLEBI","DEVA","DOHOL","ECILC","ECZYT","EDIP","EGEEN",
-    "EGGUB","ENKAI","ERBOS","EUPWR","FENER","GENIL","GENTS","GEREL","GESAN",
-    "GLYHO","GMTAS","GOODY","GOZDE","GRSEL","GUBRF","GWIND","HATEK","HEKTS",
-    "HLGYO","HOROZ","HUBVC","HURGZ","INDES","INFO","INVEO","ISBIR","ISYAT",
-    "IZENR","KAREL","KARSN","KARTN","KERVT","KLKIM","KLMSN","KONTR","KOPOL",
-    "KORDS","LOGO","MAVI","MEDTR","NATEN","NETAS","NUHCM","OTKAR","OYAKC",
-    "PETUN","PKART","POLHO","PRKAB","SARKY","SASA","SELEC","SELGD","SKBNK",
-    "SKTAS","SOKM","TATGD","TCELL","TKFEN","TTRAK","TUPRS","ULUSE","VESBE","YUNSA"]))
-
-
-def fetch_ticker(symbol, period="2y"):
-    """app.py'deki fetch_ticker ile aynı mantık."""
-    try:
-        ticker = symbol if symbol.endswith(".IS") else symbol + ".IS"
-        today = datetime.today().strftime('%Y-%m-%d')
-        df = yf.download(ticker, period=period, end=today,
-                         auto_adjust=True, progress=False, threads=False)
-        if df.empty or len(df) < 10:
-            return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df = df[['Open','High','Low','Close','Volume']].dropna()
-        df.index = pd.to_datetime(df.index)
-        return df
-    except Exception:
-        return None
-
-
-def fetch_batch(tickers, period="2y"):
-    """app.py'deki fetch_batch ile aynı mantık."""
-    results = {}
-    symbols = [t + ".IS" for t in tickers]
-    try:
-        today = datetime.today().strftime('%Y-%m-%d')
-        raw = yf.download(symbols, period=period, end=today,
-                          auto_adjust=True, group_by='ticker', progress=False)
-        for t in tickers:
-            try:
-                sym = t + ".IS"
-                if sym in raw.columns.get_level_values(0):
-                    df = raw[sym][['Open','High','Low','Close','Volume']].dropna()
-                    df.index = pd.to_datetime(df.index)
-                    if len(df) >= 40:
-                        results[t] = df
-            except Exception:
-                pass
-    except Exception:
-        pass
-    return results
-
-
-def fetch_index_closes(period="2y"):
-    """BIST100 endeks verisini çek — genel piyasa kontrolü için."""
-    try:
-        today = datetime.today().strftime('%Y-%m-%d')
-        raw = yf.download("XU100.IS", period=period, end=today,
-                          auto_adjust=True, progress=False, threads=False)
-        if raw is not None and not raw.empty:
-            if isinstance(raw.columns, pd.MultiIndex):
-                raw.columns = raw.columns.get_level_values(0)
-            return raw['Close'].values.astype(float)
-    except Exception:
-        pass
-    return None
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TEKRAR BİLDİRİM ÖNLEME (DEDUP)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def load_sent_history() -> dict:
-    """
-    Daha önce gönderilmiş sinyallerin geçmişini yükle.
-    Format: {"TICKER_WINDOW": "2026-07-01T09:00:00"}
-    """
-    if not os.path.exists(HISTORY_FILE):
-        return {}
-    try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"⚠️ Geçmiş dosyası okunamadı, sıfırdan başlanıyor: {e}")
-        return {}
-
-
-def save_sent_history(history: dict) -> None:
-    """Gönderim geçmişini diske yaz (workflow bunu daha sonra commit'ler)."""
-    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
-    # Çok eskimiş kayıtları temizle (dosya sonsuza kadar büyümesin) — 30 günden eski sil
-    cutoff = datetime.now() - timedelta(days=30)
-    cleaned = {}
-    for key, ts_str in history.items():
-        try:
-            if datetime.fromisoformat(ts_str) >= cutoff:
-                cleaned[key] = ts_str
-        except Exception:
-            continue
-    try:
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(cleaned, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"⚠️ Geçmiş dosyası yazılamadı: {e}")
-
-
-def filter_new_signals(results_by_window: dict, history: dict) -> dict:
-    """
-    Son DEDUP_HOURS saat içinde aynı hisse+vade için sinyal gönderilmişse
-    o sonucu listeden çıkar. Böylece aynı fırsat art arda spam olarak gelmez.
-    """
-    now = datetime.now()
-    filtered = {w: [] for w in results_by_window}
-    skipped = 0
-
-    for window, results in results_by_window.items():
-        for r in results:
-            key = f"{r['ticker']}_{window}"
-            last_sent = history.get(key)
-            if last_sent:
-                try:
-                    elapsed_hours = (now - datetime.fromisoformat(last_sent)).total_seconds() / 3600
-                    if elapsed_hours < DEDUP_HOURS:
-                        skipped += 1
-                        continue  # Yakın zamanda zaten gönderilmiş, atla
-                except Exception:
-                    pass
-            filtered[window].append(r)
-
-    if skipped:
-        print(f"🔁 {skipped} sinyal son {DEDUP_HOURS:.0f} saat içinde zaten gönderildiği için atlandı.")
-
-    return filtered
-
-
-def update_history_with_sent(results_by_window: dict, history: dict) -> dict:
-    """Az önce gönderilen sonuçları geçmişe zaman damgasıyla ekle."""
-    now_str = datetime.now().isoformat(timespec="seconds")
-    for window, results in results_by_window.items():
-        for r in results:
-            key = f"{r['ticker']}_{window}"
-            history[key] = now_str
-    return history
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TELEGRAM BİLDİRİMİ
-# ══════════════════════════════════════════════════════════════════════════════
-
-def send_telegram_message(text: str) -> bool:
-    """Telegram bot üzerinden mesaj gönder."""
-    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id   = os.environ.get("TELEGRAM_CHAT_ID")
-
-    if not bot_token or not chat_id:
-        print("⚠️ TELEGRAM_BOT_TOKEN veya TELEGRAM_CHAT_ID ayarlanmamış.")
-        return False
-
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True,
-    }
-    try:
-        resp = requests.post(url, json=payload, timeout=15)
-        if resp.status_code == 200:
-            return True
-        print(f"⚠️ Telegram hatası: {resp.status_code} — {resp.text}")
-        return False
-    except Exception as e:
-        print(f"⚠️ Telegram bağlantı hatası: {e}")
-        return False
-
-
-def format_results_message(results_by_window: dict, scope: str) -> list:
-    """
-    Tarama sonuçlarını Telegram mesaj(lar)ı haline getir.
-    Telegram mesaj limiti ~4096 karakter olduğu için gerekirse bölünür.
-    """
-    today_str = datetime.now().strftime('%d.%m.%Y')
-    messages = []
-
-    header = (
-        f"📊 *BIST Pattern Matcher — Günlük Tarama*\n"
-        f"📅 {today_str} | Kapsam: {scope}\n"
-        f"⚙️ PSI {MIN_SIM}+ · Güven %{MIN_CONFIDENCE}-{MAX_CONFIDENCE}\n"
-        f"{'─'*30}\n"
-    )
-
-    total_found = sum(len(v) for v in results_by_window.values())
-    if total_found == 0:
-        messages.append(
-            header + "\n🔍 Bugün kriterlere uyan fırsat bulunamadı.\n"
-            "Bu normal — sistem seçici çalışıyor, az sinyal kaliteyi gösterir."
-        )
-        return messages
-
-    current_msg = header
-
-    for window, results in results_by_window.items():
-        if not results:
-            continue
-
-        section = f"\n📈 *{window} Günlük Şablon* — {len(results)} fırsat\n\n"
-        if len(current_msg) + len(section) > 3800:
-            messages.append(current_msg)
-            current_msg = header
-
-        current_msg += section
-
-        for r in results[:10]:  # Mesaj başına max 10 hisse
-            line = (
-                f"🏢 *{r['ticker']}* — {r['current_price']:.2f} ₺\n"
-                f"   📈 Beklenen: {r['weighted_pct']:+.1f}% → "
-                f"🎯 Hedef: {r['target']:.2f} ₺\n"
-                f"   🔒 Güven: %{r['confidence']:.0f} | "
-                f"PSI: {r['avg_sim']:.0f} | "
-                f"Oy: {r['up_count']}/{r['total_matches']}\n"
-            )
-            if r.get('index_penalty_applied'):
-                line += "   ⚠️ Piyasa geneli hareket olabilir\n"
-            if r.get('formations'):
-                line += f"   🔷 {', '.join(r['formations'][:2])}\n"
-            line += "\n"
-
-            if len(current_msg) + len(line) > 3800:
-                messages.append(current_msg)
-                current_msg = header + section
-
-            current_msg += line
-
-    if current_msg.strip() != header.strip():
-        messages.append(current_msg)
-
-    messages.append(
-        "\n⚠️ _Bu bir yatırım tavsiyesi değildir. "
-        "Karar vermeden önce kendi analizinizi yapın._"
-    )
-
-    return messages
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ANA AKIŞ
-# ══════════════════════════════════════════════════════════════════════════════
-
-def run_daily_scan():
-    print(f"🚀 Günlük tarama başlıyor — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-
-    scope_map = {"BIST30": BIST30, "BIST100": BIST100}
-    tickers = scope_map.get(SCAN_SCOPE, BIST100)
-    print(f"📥 {len(tickers)} hisse ({SCAN_SCOPE}) için veri indiriliyor...")
-
-    all_data = fetch_batch(tickers, period="2y")
-    print(f"✅ {len(all_data)} hisse verisi alındı.")
-
-    index_closes = fetch_index_closes(period="2y")
-    print(f"📊 Endeks verisi: {'alındı' if index_closes is not None else 'alınamadı'}")
-
-    results_by_window = {w: [] for w in WINDOWS}
-
-    for idx, (ticker, df) in enumerate(all_data.items()):
-        if (idx + 1) % 20 == 0:
-            print(f"   ... {idx+1}/{len(all_data)} taranıyor")
-
-        for window in WINDOWS:
-            fut_window = 30 if window == 20 else 60
-            try:
-                result = scan_single_ticker(
-                    ticker, df, all_data,
-                    window=window, fut_window=fut_window,
-                    min_sim=MIN_SIM, index_closes=index_closes
-                )
-                if result and MIN_CONFIDENCE <= result['confidence'] <= MAX_CONFIDENCE:
-                    results_by_window[window].append(result)
-            except Exception as e:
-                continue
-
-    for w in results_by_window:
-        results_by_window[w].sort(
-            key=lambda x: x['confidence'] * 0.5 + x['avg_sim'] * 0.3 + x['weighted_pct'] * 0.2,
-            reverse=True
-        )
-
-    total = sum(len(v) for v in results_by_window.values())
-    print(f"🎯 Toplam {total} fırsat bulundu.")
-
-    # ── Tekrar bildirim önleme: son DEDUP_HOURS saatte gönderilenleri çıkar ──
-    history = load_sent_history()
-    new_results_by_window = filter_new_signals(results_by_window, history)
-    new_total = sum(len(v) for v in new_results_by_window.values())
-    print(f"🆕 {new_total} fırsat yeni (son {DEDUP_HOURS:.0f} saatte gönderilmemiş).")
-
-    if new_total == 0 and total > 0:
-        print("ℹ️ Tüm sinyaller zaten yakın zamanda gönderilmişti, Telegram mesajı atlanıyor.")
-        return
-
-    messages = format_results_message(new_results_by_window, SCAN_SCOPE)
-
-    print(f"📤 {len(messages)} mesaj gönderiliyor...")
-    for i, msg in enumerate(messages):
-        success = send_telegram_message(msg)
-        print(f"   Mesaj {i+1}/{len(messages)}: {'✅' if success else '❌'}")
-        if i < len(messages) - 1:
-            time.sleep(1)  # Telegram rate limit için kısa bekleme
-
-    # ── Gönderilenleri geçmişe kaydet (workflow bu dosyayı commit'leyecek) ──
-    history = update_history_with_sent(new_results_by_window, history)
-    save_sent_history(history)
-
-    print("✅ Günlük tarama tamamlandı.")
-
-
-if __name__ == "__main__":
-    run_daily_scan()
+name: BIST Fırsat Taraması (2 Saatte Bir)
+
+on:
+  schedule:
+    - cron: '0 7-15/2 * * 1-5'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repoyu checkout et
+        uses: actions/checkout@v4
+
+      - name: Python kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Bağımlılıkları yükle
+        run: pip install -r requirements.txt
+
+      - name: Taramayı çalıştır ve Telegram'a gönder
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DEDUP_HOURS: '8'
+        run: python daily_scan.py
+
+      - name: Gönderim geçmişini commit'le
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/sent_signals.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: tekrar-bildirim gecmisini guncelle [skip ci]"
+            git push
+          else
+            echo "Gecmis dosyasinda degisiklik yok, commit atlaniyor."
+          fi
