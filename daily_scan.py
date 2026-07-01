@@ -17,12 +17,13 @@ Ortam değişkenleri (.env veya GitHub Secrets üzerinden):
 
 import os
 import sys
+import json
 import time
 import numpy as np
 import pandas as pd
 import yfinance as yf
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ── Proje modüllerini import edebilmek için path ekle ──────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -38,6 +39,15 @@ MIN_CONFIDENCE = 55    # Güven 55-65 bandı optimal (backtesting: %66 kazanç)
 MAX_CONFIDENCE = 68    # Anti-consensus filtresi
 SCAN_SCOPE     = "BIST100"   # BIST30 / BIST100 / ALL — GitHub Actions süresi için BIST100 önerilir
 WINDOWS        = [20, 40]    # Kısa ve orta vadeli şablon uzunlukları
+
+# ── Tekrar bildirim önleme ──────────────────────────────────────────────────
+# Aynı hisse+vade için, bu kadar saat içinde tekrar sinyal geldiyse tekrar
+# Telegram'a gönderilmez. Tarama her 2 saatte bir çalıştığı için varsayılan
+# 8 saat, bir sinyalin aynı gün içinde en fazla ~2 kez bildirilmesini sağlar.
+DEDUP_HOURS = float(os.environ.get("DEDUP_HOURS", "8"))
+
+# Gönderim geçmişinin tutulduğu dosya (workflow bu dosyayı commit'leyerek kalıcı hale getirir)
+HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sent_signals.json")
 
 # ── BIST listeleri (app.py ile aynı) ───────────────────────────────────────────
 
@@ -113,6 +123,83 @@ def fetch_index_closes(period="2y"):
     except Exception:
         pass
     return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TEKRAR BİLDİRİM ÖNLEME (DEDUP)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def load_sent_history() -> dict:
+    """
+    Daha önce gönderilmiş sinyallerin geçmişini yükle.
+    Format: {"TICKER_WINDOW": "2026-07-01T09:00:00"}
+    """
+    if not os.path.exists(HISTORY_FILE):
+        return {}
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"⚠️ Geçmiş dosyası okunamadı, sıfırdan başlanıyor: {e}")
+        return {}
+
+
+def save_sent_history(history: dict) -> None:
+    """Gönderim geçmişini diske yaz (workflow bunu daha sonra commit'ler)."""
+    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
+    # Çok eskimiş kayıtları temizle (dosya sonsuza kadar büyümesin) — 30 günden eski sil
+    cutoff = datetime.now() - timedelta(days=30)
+    cleaned = {}
+    for key, ts_str in history.items():
+        try:
+            if datetime.fromisoformat(ts_str) >= cutoff:
+                cleaned[key] = ts_str
+        except Exception:
+            continue
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(cleaned, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ Geçmiş dosyası yazılamadı: {e}")
+
+
+def filter_new_signals(results_by_window: dict, history: dict) -> dict:
+    """
+    Son DEDUP_HOURS saat içinde aynı hisse+vade için sinyal gönderilmişse
+    o sonucu listeden çıkar. Böylece aynı fırsat art arda spam olarak gelmez.
+    """
+    now = datetime.now()
+    filtered = {w: [] for w in results_by_window}
+    skipped = 0
+
+    for window, results in results_by_window.items():
+        for r in results:
+            key = f"{r['ticker']}_{window}"
+            last_sent = history.get(key)
+            if last_sent:
+                try:
+                    elapsed_hours = (now - datetime.fromisoformat(last_sent)).total_seconds() / 3600
+                    if elapsed_hours < DEDUP_HOURS:
+                        skipped += 1
+                        continue  # Yakın zamanda zaten gönderilmiş, atla
+                except Exception:
+                    pass
+            filtered[window].append(r)
+
+    if skipped:
+        print(f"🔁 {skipped} sinyal son {DEDUP_HOURS:.0f} saat içinde zaten gönderildiği için atlandı.")
+
+    return filtered
+
+
+def update_history_with_sent(results_by_window: dict, history: dict) -> dict:
+    """Az önce gönderilen sonuçları geçmişe zaman damgasıyla ekle."""
+    now_str = datetime.now().isoformat(timespec="seconds")
+    for window, results in results_by_window.items():
+        for r in results:
+            key = f"{r['ticker']}_{window}"
+            history[key] = now_str
+    return history
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -259,7 +346,17 @@ def run_daily_scan():
     total = sum(len(v) for v in results_by_window.values())
     print(f"🎯 Toplam {total} fırsat bulundu.")
 
-    messages = format_results_message(results_by_window, SCAN_SCOPE)
+    # ── Tekrar bildirim önleme: son DEDUP_HOURS saatte gönderilenleri çıkar ──
+    history = load_sent_history()
+    new_results_by_window = filter_new_signals(results_by_window, history)
+    new_total = sum(len(v) for v in new_results_by_window.values())
+    print(f"🆕 {new_total} fırsat yeni (son {DEDUP_HOURS:.0f} saatte gönderilmemiş).")
+
+    if new_total == 0 and total > 0:
+        print("ℹ️ Tüm sinyaller zaten yakın zamanda gönderilmişti, Telegram mesajı atlanıyor.")
+        return
+
+    messages = format_results_message(new_results_by_window, SCAN_SCOPE)
 
     print(f"📤 {len(messages)} mesaj gönderiliyor...")
     for i, msg in enumerate(messages):
@@ -267,6 +364,10 @@ def run_daily_scan():
         print(f"   Mesaj {i+1}/{len(messages)}: {'✅' if success else '❌'}")
         if i < len(messages) - 1:
             time.sleep(1)  # Telegram rate limit için kısa bekleme
+
+    # ── Gönderilenleri geçmişe kaydet (workflow bu dosyayı commit'leyecek) ──
+    history = update_history_with_sent(new_results_by_window, history)
+    save_sent_history(history)
 
     print("✅ Günlük tarama tamamlandı.")
 
