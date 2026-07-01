@@ -30,7 +30,7 @@ jobs:
           DEDUP_HOURS: '8'
         run: python daily_scan.py
 
-      - - name: Gönderim geçmişini commit'le
+      - name: Gönderim geçmişini commit'le
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
