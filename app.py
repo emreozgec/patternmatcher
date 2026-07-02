@@ -1339,8 +1339,9 @@ def main():
     _pages = ["🔍 Pattern Matcher", "🔭 Fırsat Tarayıcı",
               "📈 Sinyal Performansı",
               "📚 Şablon Kütüphanesi", "📊 Backtesting",
-              "💼 Portföy Simülasyonu", "🗳️ Geri Bildirim",
+              "🗳️ Geri Bildirim",
               "🔔 Telegram Bildirimleri"]
+
 
 
     _goto = st.session_state.pop('_goto_page', None)
@@ -1381,9 +1382,6 @@ def main():
         render_feedback_summary_page()
         return
 
-    if page == "💼 Portföy Simülasyonu":
-        render_portfolio(fetch_ticker_fn=fetch_ticker)
-        return
 
     if page == "📊 Backtesting":
         render_backtest(
