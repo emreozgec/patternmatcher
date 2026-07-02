@@ -229,7 +229,7 @@ def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates
 
 
 def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
-                       index_closes=None):
+                       index_closes=None, bist100_set=None):
     """
     Tek hisse için fırsat analizi:
     - Son `window` günü şablon al
@@ -270,6 +270,14 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
     for other_ticker, other_df in all_data.items():
         if other_ticker == ticker:
             continue
+            
+        # Tüm BIST taramasında (len > 150) aday arama havuzunu sadece BIST100 ile sınırlarız.
+        # Bu işlem aramayı 5 kat hızlandırır ve likit olmayan gürültülü tahtaları eler.
+        if bist100_set is not None and len(all_data) > 150:
+            clean_ticker = other_ticker.replace('.IS', '')
+            if clean_ticker not in bist100_set and other_ticker != "XU100.IS":
+                continue
+
         other_closes = other_df['Close'].values.astype(float)
         other_dates = other_df.index
         result = find_best_match(tpl_z, other_closes, window, fut_window, other_dates,
@@ -277,6 +285,7 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
         if result and result['sim'] >= min_sim:
             result['source'] = other_ticker
             matches.append(result)
+
 
     # Bu hissenin kendi geçmişinde de ara (son window gün hariç)
     if len(closes) >= window * 3 + fut_window:
@@ -491,21 +500,25 @@ def render_scanner(all_data_getter, bist_lists):
             del chunk_raw
             gc.collect()
 
-        # 2. Aşama: Paralel Tarama ve Analiz (50% - 100%)
         progress_text.text("Hisseler analiz ediliyor...")
         clear_window_cache()
-        
+        bist100_set = set(bist_lists['bist100'])
+
+
         def _process_ticker_task(ticker):
             df = lightweight_data.get(ticker)
             if df is None or len(df) < 10:
                 return None
             r20 = scan_single_ticker(ticker, df, lightweight_data,
                                      window=20, fut_window=30,
-                                     min_sim=min_sim, index_closes=index_closes)
+                                     min_sim=min_sim, index_closes=index_closes,
+                                     bist100_set=bist100_set)
             r40 = scan_single_ticker(ticker, df, lightweight_data,
                                      window=40, fut_window=60,
-                                     min_sim=min_sim, index_closes=index_closes)
+                                     min_sim=min_sim, index_closes=index_closes,
+                                     bist100_set=bist100_set)
             return ticker, r20, r40
+
 
         tickers_list = list(lightweight_data.keys())
         total_tickers = len(tickers_list)
