@@ -19,11 +19,32 @@ import os
 import sys
 import json
 import time
+import html
 import numpy as np
 import pandas as pd
 import yfinance as yf
 import requests
 from datetime import datetime, timedelta
+
+# Yerel ortamda .env dosyasından token'ları yüklemek için
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+
+# Windows ve diğer konsollarda emoji yazdırma hatalarını önlemek için stdout kodlamasını ayarla
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
+
+# yfinance indirmelerinin GitHub Actions ve yerel çalışmalarda engellenmesini önlemek için User-Agent tanımlı session oluştur
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+})
 
 # ── Proje modüllerini import edebilmek için path ekle ──────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -75,7 +96,7 @@ def fetch_ticker(symbol, period="2y"):
         ticker = symbol if symbol.endswith(".IS") else symbol + ".IS"
         today = datetime.today().strftime('%Y-%m-%d')
         df = yf.download(ticker, period=period, end=today,
-                         auto_adjust=True, progress=False, threads=False)
+                         auto_adjust=True, progress=False, threads=False, session=session)
         if df.empty or len(df) < 10:
             return None
         if isinstance(df.columns, pd.MultiIndex):
@@ -94,7 +115,7 @@ def fetch_batch(tickers, period="2y"):
     try:
         today = datetime.today().strftime('%Y-%m-%d')
         raw = yf.download(symbols, period=period, end=today,
-                          auto_adjust=True, group_by='ticker', progress=False)
+                          auto_adjust=True, group_by='ticker', progress=False, session=session)
         for t in tickers:
             try:
                 sym = t + ".IS"
@@ -115,7 +136,7 @@ def fetch_index_closes(period="2y"):
     try:
         today = datetime.today().strftime('%Y-%m-%d')
         raw = yf.download("XU100.IS", period=period, end=today,
-                          auto_adjust=True, progress=False, threads=False)
+                          auto_adjust=True, progress=False, threads=False, session=session)
         if raw is not None and not raw.empty:
             if isinstance(raw.columns, pd.MultiIndex):
                 raw.columns = raw.columns.get_level_values(0)
@@ -203,102 +224,10 @@ def update_history_with_sent(results_by_window: dict, history: dict) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TELEGRAM BİLDİRİMİ
+# TELEGRAM BİLDİRİMİ (MODÜLDEN YÜKLENİR)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def send_telegram_message(text: str) -> bool:
-    """Telegram bot üzerinden mesaj gönder."""
-    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id   = os.environ.get("TELEGRAM_CHAT_ID")
-
-    if not bot_token or not chat_id:
-        print("⚠️ TELEGRAM_BOT_TOKEN veya TELEGRAM_CHAT_ID ayarlanmamış.")
-        return False
-
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True,
-    }
-    try:
-        resp = requests.post(url, json=payload, timeout=15)
-        if resp.status_code == 200:
-            return True
-        print(f"⚠️ Telegram hatası: {resp.status_code} — {resp.text}")
-        return False
-    except Exception as e:
-        print(f"⚠️ Telegram bağlantı hatası: {e}")
-        return False
-
-
-def format_results_message(results_by_window: dict, scope: str) -> list:
-    """
-    Tarama sonuçlarını Telegram mesaj(lar)ı haline getir.
-    Telegram mesaj limiti ~4096 karakter olduğu için gerekirse bölünür.
-    """
-    today_str = datetime.now().strftime('%d.%m.%Y')
-    messages = []
-
-    header = (
-        f"📊 *BIST Pattern Matcher — Günlük Tarama*\n"
-        f"📅 {today_str} | Kapsam: {scope}\n"
-        f"⚙️ PSI {MIN_SIM}+ · Güven %{MIN_CONFIDENCE}-{MAX_CONFIDENCE}\n"
-        f"{'─'*30}\n"
-    )
-
-    total_found = sum(len(v) for v in results_by_window.values())
-    if total_found == 0:
-        messages.append(
-            header + "\n🔍 Bugün kriterlere uyan fırsat bulunamadı.\n"
-            "Bu normal — sistem seçici çalışıyor, az sinyal kaliteyi gösterir."
-        )
-        return messages
-
-    current_msg = header
-
-    for window, results in results_by_window.items():
-        if not results:
-            continue
-
-        section = f"\n📈 *{window} Günlük Şablon* — {len(results)} fırsat\n\n"
-        if len(current_msg) + len(section) > 3800:
-            messages.append(current_msg)
-            current_msg = header
-
-        current_msg += section
-
-        for r in results[:10]:  # Mesaj başına max 10 hisse
-            line = (
-                f"🏢 *{r['ticker']}* — {r['current_price']:.2f} ₺\n"
-                f"   📈 Beklenen: {r['weighted_pct']:+.1f}% → "
-                f"🎯 Hedef: {r['target']:.2f} ₺\n"
-                f"   🔒 Güven: %{r['confidence']:.0f} | "
-                f"PSI: {r['avg_sim']:.0f} | "
-                f"Oy: {r['up_count']}/{r['total_matches']}\n"
-            )
-            if r.get('index_penalty_applied'):
-                line += "   ⚠️ Piyasa geneli hareket olabilir\n"
-            if r.get('formations'):
-                line += f"   🔷 {', '.join(r['formations'][:2])}\n"
-            line += "\n"
-
-            if len(current_msg) + len(line) > 3800:
-                messages.append(current_msg)
-                current_msg = header + section
-
-            current_msg += line
-
-    if current_msg.strip() != header.strip():
-        messages.append(current_msg)
-
-    messages.append(
-        "\n⚠️ _Bu bir yatırım tavsiyesi değildir. "
-        "Karar vermeden önce kendi analizinizi yapın._"
-    )
-
-    return messages
+from telegram_utils import send_telegram_message, format_results_message
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -318,24 +247,67 @@ def run_daily_scan():
     index_closes = fetch_index_closes(period="2y")
     print(f"📊 Endeks verisi: {'alındı' if index_closes is not None else 'alınamadı'}")
 
+    # SQLite Veritabanı ve Açık Pozisyon Güncellemesi
+    try:
+        import db_utils
+        print("🔄 SQLite veritabanı ilklendiriliyor ve açık pozisyonlar güncelleniyor...")
+        db_utils.init_db()
+        db_utils.update_signal_statuses(all_data)
+    except Exception as e:
+        print(f"⚠️ Veritabanı güncelleme hatası: {e}")
+
     results_by_window = {w: [] for w in WINDOWS}
 
-    for idx, (ticker, df) in enumerate(all_data.items()):
-        if (idx + 1) % 20 == 0:
-            print(f"   ... {idx+1}/{len(all_data)} taranıyor")
+    import concurrent.futures
 
-        for window in WINDOWS:
-            fut_window = 30 if window == 20 else 60
+    def _process_ticker_daily(ticker):
+        df = all_data.get(ticker)
+        if df is None or len(df) < 10:
+            return None
+        t_res_20 = None
+        t_res_40 = None
+        
+        # 20G
+        try:
+            r20 = scan_single_ticker(ticker, df, all_data,
+                                     window=20, fut_window=30,
+                                     min_sim=MIN_SIM, index_closes=index_closes)
+            if r20 and MIN_CONFIDENCE <= r20['confidence'] <= MAX_CONFIDENCE:
+                t_res_20 = r20
+        except Exception:
+            pass
+            
+        # 40G
+        try:
+            r40 = scan_single_ticker(ticker, df, all_data,
+                                     window=40, fut_window=60,
+                                     min_sim=MIN_SIM, index_closes=index_closes)
+            if r40 and MIN_CONFIDENCE <= r40['confidence'] <= MAX_CONFIDENCE:
+                t_res_40 = r40
+        except Exception:
+            pass
+            
+        return t_res_20, t_res_40
+
+    tickers_list = list(all_data.keys())
+    total_tickers = len(tickers_list)
+    print(f"⚡ {total_tickers} hisse paralel olarak taranıyor (8 threads)...")
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(_process_ticker_daily, t): t for t in tickers_list}
+        for idx, fut in enumerate(concurrent.futures.as_completed(futures)):
+            if (idx + 1) % 20 == 0 or (idx + 1) == total_tickers:
+                print(f"   ... {idx+1}/{total_tickers} tarandı")
             try:
-                result = scan_single_ticker(
-                    ticker, df, all_data,
-                    window=window, fut_window=fut_window,
-                    min_sim=MIN_SIM, index_closes=index_closes
-                )
-                if result and MIN_CONFIDENCE <= result['confidence'] <= MAX_CONFIDENCE:
-                    results_by_window[window].append(result)
+                res = fut.result()
+                if res:
+                    r20, r40 = res
+                    if r20:
+                        results_by_window[20].append(r20)
+                    if r40:
+                        results_by_window[40].append(r40)
             except Exception as e:
-                continue
+                print(f"⚠️ {futures[fut]} taranırken hata: {e}")
 
     for w in results_by_window:
         results_by_window[w].sort(
@@ -345,6 +317,28 @@ def run_daily_scan():
 
     total = sum(len(v) for v in results_by_window.values())
     print(f"🎯 Toplam {total} fırsat bulundu.")
+
+    # SQLite veritabanına kaydet (Yeni)
+    try:
+        import db_utils
+        today_str = datetime.today().strftime('%Y-%m-%d')
+        for window, results in results_by_window.items():
+            for r in results:
+                db_utils.save_signal(
+                    ticker=r['ticker'],
+                    window=window,
+                    signal_date=today_str,
+                    entry_price=r['current_price'],
+                    target_price=r['target'],
+                    weighted_pct=r['weighted_pct'],
+                    confidence=r['confidence'],
+                    avg_sim=r['avg_sim'],
+                    source='daily_scan'
+                )
+    except Exception as e:
+        print(f"⚠️ Veritabanına kaydederken hata: {e}")
+
+
 
     # ── Tekrar bildirim önleme: son DEDUP_HOURS saatte gönderilenleri çıkar ──
     history = load_sent_history()

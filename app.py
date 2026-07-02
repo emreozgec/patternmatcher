@@ -12,12 +12,23 @@ from character_similarity import (
     build_character_profile, character_similarity,
     future_behavior_compatibility, historical_correlation, correlation_score
 )
+from performance import render_performance_dashboard
+import db_utils
+
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
+import requests
+
+# yfinance indirmelerinin engellenmesini önlemek için User-Agent tanımlı session oluştur
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+})
+
 
 st.set_page_config(
     page_title="BIST Pattern Matcher",
@@ -112,7 +123,7 @@ def fetch_ticker(symbol, period="1y"):
         ticker = symbol if symbol.endswith(".IS") else symbol + ".IS"
         today = datetime.today().strftime('%Y-%m-%d')
         df = yf.download(ticker, period=period, end=today,
-                         auto_adjust=True, progress=False, threads=False)
+                         auto_adjust=True, progress=False, threads=False, session=session)
         if df.empty or len(df) < 10:
             return None
         if isinstance(df.columns, pd.MultiIndex):
@@ -130,7 +141,7 @@ def fetch_batch(tickers, period="2y"):
     try:
         today = datetime.today().strftime('%Y-%m-%d')
         raw = yf.download(symbols, period=period, end=today,
-                          auto_adjust=True, group_by='ticker', progress=False)
+                          auto_adjust=True, group_by='ticker', progress=False, session=session)
         for t in tickers:
             try:
                 sym = t + ".IS"
@@ -1319,10 +1330,18 @@ def render_telegram_setup():
 
 
 def main():
+    # Veritabanını ilklendir
+    try:
+        db_utils.init_db()
+    except Exception as e:
+        print(f"⚠️ Veritabanı ilklendirilirken hata: {e}")
+
     _pages = ["🔍 Pattern Matcher", "🔭 Fırsat Tarayıcı",
+              "📈 Sinyal Performansı",
               "📚 Şablon Kütüphanesi", "📊 Backtesting",
               "💼 Portföy Simülasyonu", "🗳️ Geri Bildirim",
               "🔔 Telegram Bildirimleri"]
+
 
     _goto = st.session_state.pop('_goto_page', None)
     if _goto and _goto in _pages:
@@ -1397,6 +1416,11 @@ def main():
         }
         render_scanner(_get_data, bist_lists)
         return
+
+    if page == "📈 Sinyal Performansı":
+        render_performance_dashboard()
+        return
+
 
     # Kütüphaneden yükleme isteği geldi mi?
     lib_action = st.session_state.get('library_action')

@@ -67,11 +67,36 @@ def pearson(a, b):
         return 0.0
     return float(np.corrcoef(a, b)[0, 1])
 
+try:
+    from numba import njit
+    @njit(cache=True, nogil=True)
+    def _dtw_fast_jit(s1, s2, band):
+        n = len(s1)
+        dtw = np.full((n+1, n+1), np.inf)
+        dtw[0, 0] = 0.0
+        for i in range(1, n+1):
+            j0 = max(1, i - band)
+            j1 = min(n, i + band) + 1
+            for j in range(j0, j1):
+                cost = abs(s1[i-1] - s2[j-1])
+                dtw[i, j] = cost + min(dtw[i-1, j], dtw[i, j-1], dtw[i-1, j-1])
+        return dtw[n, n]
+except ImportError:
+    _dtw_fast_jit = None
+
 def dtw_fast(s1, s2, band=None):
     n = len(s1)
     if n == 0:
         return 0.0
     band = band or max(2, n // 6)
+    
+    if _dtw_fast_jit is not None:
+        try:
+            dist = _dtw_fast_jit(s1, s2, band) / n
+            return max(0.0, 1.0 - dist * 1.5)
+        except Exception:
+            pass # fallback
+            
     dtw = np.full((n+1, n+1), np.inf)
     dtw[0, 0] = 0
     for i in range(1, n+1):
@@ -82,6 +107,7 @@ def dtw_fast(s1, s2, band=None):
             dtw[i,j] = cost + min(dtw[i-1,j], dtw[i,j-1], dtw[i-1,j-1])
     dist = dtw[n,n] / n
     return max(0.0, 1.0 - dist * 1.5)
+
 
 def similarity_score(tpl_z, win_prices):
     """Hızlı benzerlik: Pearson + DTW kombinasyonu"""
@@ -401,8 +427,6 @@ def render_scanner(all_data_getter, bist_lists):
     </div>
     """, unsafe_allow_html=True)
 
-    CHUNK_SIZE = 20  # Her rerun'da bu kadar hisse işlenir — bağlantı canlı kalır
-
     if scan_btn:
         scope_map = {
             "BIST 30": bist_lists['bist30'],
@@ -428,86 +452,108 @@ def render_scanner(all_data_getter, bist_lists):
 
         clear_window_cache()
 
-        # Yeni tarama oturumu başlat — chunk işleme için state hazırla
-        st.session_state['scan_job'] = {
-            'tickers': list(all_data.keys()),
-            'all_data': all_data,
-            'index_closes': index_closes,
-            'min_sim': min_sim,
-            'min_conf': min_conf,
-            'max_conf': max_conf,
-            'scope': scope,
-            'cursor': 0,
-            'results_20': [],
-            'results_40': [],
-            'start_time': time.time(),
-        }
-        st.session_state.pop('scan_results_20', None)
-        st.session_state.pop('scan_results_40', None)
+        # Paralel Tarama
+        start_time = time.time()
+        results_20 = []
+        results_40 = []
+        
+        # Progress bar elemanları
+        progress_text = st.empty()
+        progress_bar = st.progress(0)
+        
+        import concurrent.futures
+        
+        def _process_ticker_task(ticker):
+            df = all_data.get(ticker)
+            if df is None or len(df) < 10:
+                return None
+            # 20G
+            r20 = scan_single_ticker(ticker, df, all_data,
+                                     window=20, fut_window=30,
+                                     min_sim=min_sim, index_closes=index_closes)
+            # 40G
+            r40 = scan_single_ticker(ticker, df, all_data,
+                                     window=40, fut_window=60,
+                                     min_sim=min_sim, index_closes=index_closes)
+            return ticker, r20, r40
+
+        tickers_list = list(all_data.keys())
+        total_tickers = len(tickers_list)
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {executor.submit(_process_ticker_task, t): t for t in tickers_list}
+            
+            for idx, fut in enumerate(concurrent.futures.as_completed(futures)):
+                try:
+                     res = fut.result()
+                     if res:
+                         ticker, r20, r40 = res
+                         if r20 and min_conf <= r20['confidence'] <= max_conf:
+                             results_20.append(r20)
+                         if r40 and min_conf <= r40['confidence'] <= max_conf:
+                             results_40.append(r40)
+                except Exception as e:
+                     print(f"⚠️ {futures[fut]} taranırken hata: {e}")
+                
+                # Progress bar'ı güncelle
+                percent = int((idx + 1) / total_tickers * 100)
+                progress_bar.progress(percent)
+                progress_text.text(f"Taranıyor: {idx + 1}/{total_tickers} hisse")
+
+        clear_window_cache()
+        
+        # Sırala
+        key_fn = lambda x: x['confidence'] * 0.5 + x['avg_sim'] * 0.3 + x['weighted_pct'] * 0.2
+        results_20_sorted = sorted(results_20, key=key_fn, reverse=True)
+        results_40_sorted = sorted(results_40, key=key_fn, reverse=True)
+
+        total_time = time.time() - start_time
+        
+        st.session_state['scan_results_20'] = results_20_sorted
+        st.session_state['scan_results_40'] = results_40_sorted
+        st.session_state['scan_scope'] = scope
+        st.session_state['scan_duration'] = total_time
+        
+        # Temizle
+        progress_bar.empty()
+        progress_text.empty()
+        
+        # SQLite veritabanına otomatik kaydet
+        try:
+             import db_utils
+             from datetime import datetime
+             today_str = datetime.today().strftime('%Y-%m-%d')
+             db_utils.init_db() # Veritabanının oluşturulduğundan emin ol
+             for r in results_20_sorted:
+                 db_utils.save_signal(
+                     ticker=r['ticker'],
+                     window=20,
+                     signal_date=today_str,
+                     entry_price=r['current_price'],
+                     target_price=r['target'],
+                     weighted_pct=r['weighted_pct'],
+                     confidence=r['confidence'],
+                     avg_sim=r['avg_sim'],
+                     source='manual_scan'
+                 )
+             for r in results_40_sorted:
+                 db_utils.save_signal(
+                     ticker=r['ticker'],
+                     window=40,
+                     signal_date=today_str,
+                     entry_price=r['current_price'],
+                     target_price=r['target'],
+                     weighted_pct=r['weighted_pct'],
+                     confidence=r['confidence'],
+                     avg_sim=r['avg_sim'],
+                     source='manual_scan'
+                 )
+        except Exception as e:
+             print(f"⚠️ Veritabanına kaydederken hata: {e}")
+             
+        st.success(f"✅ Tarama {total_time:.1f} saniyede tamamlandı!")
         st.rerun()
 
-    # ── Devam eden tarama işi varsa chunk'lar halinde işle ──────────────────
-    job = st.session_state.get('scan_job')
-    if job is not None:
-        total = len(job['tickers'])
-        cursor = job['cursor']
-        chunk_end = min(cursor + CHUNK_SIZE, total)
-        chunk_tickers = job['tickers'][cursor:chunk_end]
-
-        prog = st.progress(int(cursor / total * 100) if total else 0,
-                           text=f"Taranıyor: {cursor}/{total} hisse")
-        eta_text = st.empty()
-        elapsed = time.time() - job['start_time']
-        rate = cursor / elapsed if elapsed > 0 and cursor > 0 else 0
-        remaining = (total - cursor) / rate if rate > 0 else 0
-        eta_text.caption(
-            f"⏱️ Geçen: {elapsed:.0f}sn | Tahmini kalan: {remaining:.0f}sn | "
-            f"Bulunan: {len(job['results_20']) + len(job['results_40'])} fırsat | "
-            f"Bu sayfa otomatik ilerleyecek — kapatmayın"
-        )
-
-        if st.button("⏹️ Taramayı İptal Et", key="cancel_scan"):
-            st.session_state.pop('scan_job', None)
-            st.warning("Tarama iptal edildi.")
-            st.rerun()
-
-        for ticker in chunk_tickers:
-            df = job['all_data'][ticker]
-            r20 = scan_single_ticker(ticker, df, job['all_data'],
-                                     window=20, fut_window=30,
-                                     min_sim=job['min_sim'], index_closes=job['index_closes'])
-            if r20 and job['min_conf'] <= r20['confidence'] <= job['max_conf']:
-                job['results_20'].append(r20)
-
-            r40 = scan_single_ticker(ticker, df, job['all_data'],
-                                     window=40, fut_window=60,
-                                     min_sim=job['min_sim'], index_closes=job['index_closes'])
-            if r40 and job['min_conf'] <= r40['confidence'] <= job['max_conf']:
-                job['results_40'].append(r40)
-
-        job['cursor'] = chunk_end
-        st.session_state['scan_job'] = job
-
-        if chunk_end < total:
-            # Daha hisse var — kısa bekleme sonrası otomatik devam et
-            time.sleep(0.1)
-            st.rerun()
-        else:
-            # Tarama tamamlandı
-            clear_window_cache()
-            key_fn = lambda x: x['confidence'] * 0.5 + x['avg_sim'] * 0.3 + x['weighted_pct'] * 0.2
-            results_20 = sorted(job['results_20'], key=key_fn, reverse=True)
-            results_40 = sorted(job['results_40'], key=key_fn, reverse=True)
-
-            total_time = time.time() - job['start_time']
-            st.session_state['scan_results_20'] = results_20
-            st.session_state['scan_results_40'] = results_40
-            st.session_state['scan_scope'] = job['scope']
-            st.session_state['scan_duration'] = total_time
-            st.session_state.pop('scan_job', None)  # all_data dahil ağır veriyi serbest bırak
-            st.success(f"✅ Tarama {total_time:.0f} saniyede tamamlandı!")
-            st.rerun()
-        return  # Chunk işlenirken aşağıdaki sonuç bölümünü gösterme
 
     # ── Devam eden iş yoksa ve daha önce bitmiş sonuç varsa devam ──────────
     scan_duration = st.session_state.get('scan_duration')
@@ -532,7 +578,27 @@ def render_scanner(all_data_getter, bist_lists):
         )
         return
 
-    st.success(f"✅ **{scope_label}** — {len(r20)} kısa vadeli + {len(r40)} orta vadeli fırsat")
+    col_suc, col_tg = st.columns([3, 1])
+    col_suc.success(f"✅ **{scope_label}** — {len(r20)} kısa vadeli + {len(r40)} orta vadeli fırsat")
+    with col_tg:
+        if st.button("📤 Telegram'a Gönder", key="manual_tg_send_btn", use_container_width=True):
+            with st.spinner("Telegram'a gönderiliyor..."):
+                try:
+                    from telegram_utils import send_telegram_message, format_results_message
+                    results_by_window = {20: r20, 40: r40}
+                    messages = format_results_message(results_by_window, scope_label)
+                    success_count = 0
+                    for m in messages:
+                        if send_telegram_message(m):
+                            success_count += 1
+                        time.sleep(1)
+                    if success_count == len(messages):
+                        st.success("✅ Gönderildi!")
+                    else:
+                        st.warning(f"⚠️ {success_count}/{len(messages)} gönderildi.")
+                except Exception as e:
+                    st.error(f"❌ Hata: {e}")
+
 
     # ── Çoklu Şablon Doğrulama ──────────────────────────────────────────────
     # Hem 20G hem 40G taramasında aynı hisse, aynı yönde (bullish) çıktıysa

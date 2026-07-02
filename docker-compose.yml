@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  bist-pattern-matcher:
+    build: .
+    container_name: bist-pattern-matcher
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - DEDUP_HOURS=8
+    restart: unless-stopped
