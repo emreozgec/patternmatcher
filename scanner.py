@@ -435,8 +435,10 @@ def render_scanner(all_data_getter, bist_lists):
         }
         tickers = scope_map[scope]
 
-        with st.spinner("Veriler yükleniyor..."):
-            all_data = all_data_getter(tickers, period="2y")
+        # RAM dostu parçalama (Chunking): Tüm BIST taranırken 1GB RAM'in taşmaması için
+        # Hisseleri 50'şerli gruplar halinde indirip sadece Close/Volume verilerini alacağız.
+        chunk_size = 50 if scope == "Tüm BIST" else len(tickers)
+        ticker_chunks = [tickers[i:i + chunk_size] for i in range(0, len(tickers), chunk_size)]
 
         index_closes = None
         try:
@@ -452,7 +454,7 @@ def render_scanner(all_data_getter, bist_lists):
 
         clear_window_cache()
 
-        # Paralel Tarama
+        # Paralel Tarama hazırlığı
         start_time = time.time()
         results_20 = []
         results_40 = []
@@ -462,43 +464,74 @@ def render_scanner(all_data_getter, bist_lists):
         progress_bar = st.progress(0)
         
         import concurrent.futures
+        import gc
+        
+        lightweight_data = {}
+        total_chunks = len(ticker_chunks)
+        
+        # 1. Aşama: Verilerin Parça Parça İndirilmesi ve Hafifletilmesi (0% - 50%)
+        for idx, chunk in enumerate(ticker_chunks):
+            progress_text.text(f"Veriler indiriliyor (Grup {idx + 1}/{total_chunks})...")
+            chunk_raw = all_data_getter(chunk, period="2y")
+            if chunk_raw:
+                for t, df in chunk_raw.items():
+                    if df is not None and not df.empty and 'Close' in df.columns:
+                        # Sadece gerekli sütunları (Close, Volume) kopyalıyoruz (Büyük RAM tasarrufu!)
+                        cols = ['Close', 'Volume'] if 'Volume' in df.columns else ['Close']
+                        lightweight_df = df[cols].copy()
+                        if 'Volume' not in lightweight_df.columns:
+                            lightweight_df['Volume'] = 0.0
+                        lightweight_data[t] = lightweight_df
+            
+            # Progress bar güncelle
+            percent = int((idx + 1) / total_chunks * 50)
+            progress_bar.progress(percent)
+            
+            # Gereksiz ham veriyi sil ve RAM'i boşalt
+            del chunk_raw
+            gc.collect()
+
+        # 2. Aşama: Paralel Tarama ve Analiz (50% - 100%)
+        progress_text.text("Hisseler analiz ediliyor...")
+        clear_window_cache()
         
         def _process_ticker_task(ticker):
-            df = all_data.get(ticker)
+            df = lightweight_data.get(ticker)
             if df is None or len(df) < 10:
                 return None
-            # 20G
-            r20 = scan_single_ticker(ticker, df, all_data,
+            r20 = scan_single_ticker(ticker, df, lightweight_data,
                                      window=20, fut_window=30,
                                      min_sim=min_sim, index_closes=index_closes)
-            # 40G
-            r40 = scan_single_ticker(ticker, df, all_data,
+            r40 = scan_single_ticker(ticker, df, lightweight_data,
                                      window=40, fut_window=60,
                                      min_sim=min_sim, index_closes=index_closes)
             return ticker, r20, r40
 
-        tickers_list = list(all_data.keys())
+        tickers_list = list(lightweight_data.keys())
         total_tickers = len(tickers_list)
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        # Streamlit Cloud'da RAM taşmasını önlemek için Tüm BIST'te thread sayısını 4'e düşürüyoruz
+        max_workers = 4 if scope == "Tüm BIST" else 8
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_process_ticker_task, t): t for t in tickers_list}
             
             for idx, fut in enumerate(concurrent.futures.as_completed(futures)):
                 try:
                      res = fut.result()
                      if res:
-                         ticker, r20, r40 = res
-                         if r20 and min_conf <= r20['confidence'] <= max_conf:
-                             results_20.append(r20)
-                         if r40 and min_conf <= r40['confidence'] <= max_conf:
-                             results_40.append(r40)
+                          ticker, r20, r40 = res
+                          if r20 and min_conf <= r20['confidence'] <= max_conf:
+                              results_20.append(r20)
+                          if r40 and min_conf <= r40['confidence'] <= max_conf:
+                              results_40.append(r40)
                 except Exception as e:
                      print(f"⚠️ {futures[fut]} taranırken hata: {e}")
                 
-                # Progress bar'ı güncelle
-                percent = int((idx + 1) / total_tickers * 100)
+                # Progress bar güncelle
+                percent = 50 + int((idx + 1) / total_tickers * 50)
                 progress_bar.progress(percent)
-                progress_text.text(f"Taranıyor: {idx + 1}/{total_tickers} hisse")
+                progress_text.text(f"Analiz ediliyor: {idx + 1}/{total_tickers} hisse")
 
         clear_window_cache()
         
@@ -517,6 +550,10 @@ def render_scanner(all_data_getter, bist_lists):
         # Temizle
         progress_bar.empty()
         progress_text.empty()
+        
+        # RAM temizliği
+        del lightweight_data
+        gc.collect()
         
         # SQLite veritabanına otomatik kaydet
         try:
