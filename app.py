@@ -1360,17 +1360,18 @@ def main():
 
     # Mobil cihazlarda sidebar görünmeyebilir — üstte de yedek navigasyon göster
     with st.expander("📌 Sayfa Seç (sidebar görünmüyorsa buradan geçin)", expanded=False):
-        st.radio("", _pages, index=current_idx,
+        st.radio("Navigasyon", _pages, index=current_idx,
                  label_visibility="collapsed", key="page_nav_mobile",
                  on_change=_on_page_change_mobile)
 
     # Navigasyon — sidebar (masaüstünde birincil)
     with st.sidebar:
         st.markdown("### 📌 Sayfa")
-        st.radio("", _pages, index=current_idx,
+        st.radio("Navigasyon", _pages, index=current_idx,
                  label_visibility="collapsed", key="page_nav_sidebar",
                  on_change=_on_page_change_sidebar)
         st.divider()
+
 
     page = st.session_state['current_page']
 
