@@ -29,10 +29,17 @@ def init_db():
         close_price REAL,
         pct_change REAL,
         source TEXT, -- 'daily_scan', 'manual_scan'
+        expected_days INTEGER, -- Hedefe ulaşma tahmini süresi (Gün)
         UNIQUE(ticker, window, signal_date)
     )
     """)
     
+    # Mevcut veritabanlarına kolon eklemek için (schema migration)
+    try:
+        cursor.execute("ALTER TABLE signals ADD COLUMN expected_days INTEGER")
+    except sqlite3.OperationalError:
+        pass
+        
     # Performans için indeksler
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_signals_ticker ON signals(ticker)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status)")
@@ -41,21 +48,22 @@ def init_db():
     conn.commit()
     conn.close()
 
-def save_signal(ticker, window, signal_date, entry_price, target_price, weighted_pct, confidence, avg_sim, source):
+def save_signal(ticker, window, signal_date, entry_price, target_price, weighted_pct, confidence, avg_sim, source, expected_days=None):
     """Yeni bir sinyali veritabanına kaydeder (mükerrer kayıtları önler)."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
         cursor.execute("""
         INSERT OR IGNORE INTO signals 
-        (ticker, window, signal_date, entry_price, target_price, weighted_pct, confidence, avg_sim, status, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
-        """, (ticker, window, signal_date, entry_price, target_price, weighted_pct, confidence, avg_sim, source))
+        (ticker, window, signal_date, entry_price, target_price, weighted_pct, confidence, avg_sim, status, source, expected_days)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
+        """, (ticker, window, signal_date, entry_price, target_price, weighted_pct, confidence, avg_sim, source, expected_days))
         conn.commit()
     except Exception as e:
         print(f"⚠️ Sinyal kaydedilirken hata: {e}")
     finally:
         conn.close()
+
 
 def get_open_signals():
     """Açık pozisyondaki (OPEN) sinyalleri getirir."""

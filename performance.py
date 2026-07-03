@@ -142,8 +142,13 @@ def render_performance_dashboard():
             df_open['pot_return'] = ((df_open['target_price'] - df_open['entry_price']) / df_open['entry_price']) * 100
             
             # Kolay okunabilmesi için formatla
-            df_show_open = df_open[['ticker', 'window', 'signal_date', 'entry_price', 'target_price', 'pot_return', 'confidence', 'avg_sim', 'source']].copy()
-            df_show_open.columns = ['Hisse', 'Vade (Gün)', 'Sinyal Tarihi', 'Giriş Fiyatı ₺', 'Hedef Fiyatı ₺', 'Potansiyel Getiri %', 'Güven %', 'PSI Benzerlik', 'Kaynak']
+            # expected_days yoksa NaN veya 0 gelebilir, dolgu yapalım
+            if 'expected_days' not in df_open.columns:
+                df_open['expected_days'] = 0
+            df_open['expected_days'] = df_open['expected_days'].fillna(0).astype(int)
+            
+            df_show_open = df_open[['ticker', 'window', 'signal_date', 'entry_price', 'target_price', 'pot_return', 'expected_days', 'confidence', 'avg_sim', 'source']].copy()
+            df_show_open.columns = ['Hisse', 'Şablon Vadesi', 'Sinyal Tarihi', 'Giriş Fiyatı ₺', 'Hedef Fiyatı ₺', 'Potansiyel Getiri %', 'Tahmini Ulaşma (Gün)', 'Güven %', 'PSI Benzerlik', 'Kaynak']
             
             st.dataframe(
                 df_show_open.style.format({
@@ -151,7 +156,8 @@ def render_performance_dashboard():
                     'Hedef Fiyatı ₺': '{:.2f}',
                     'Potansiyel Getiri %': '{:+.2f}%',
                     'Güven %': '%{:.1f}',
-                    'PSI Benzerlik': '{:.1f}'
+                    'PSI Benzerlik': '{:.1f}',
+                    'Tahmini Ulaşma (Gün)': '{} gün'
                 }),
                 use_container_width=True,
                 hide_index=True
@@ -161,8 +167,15 @@ def render_performance_dashboard():
 
     with tab_closed:
         if not df_closed.empty:
-            df_show_closed = df_closed[['ticker', 'window', 'signal_date', 'close_date', 'entry_price', 'close_price', 'status', 'pct_change', 'source']].copy()
-            df_show_closed.columns = ['Hisse', 'Vade (Gün)', 'Sinyal Tarihi', 'Kapanış Tarihi', 'Giriş Fiyatı ₺', 'Kapanış Fiyatı ₺', 'Durum', 'Getiri %', 'Kaynak']
+            # Sinyal ile kapanış arasındaki takvim günü farkını hesapla
+            df_closed['actual_days'] = (pd.to_datetime(df_closed['close_date']) - pd.to_datetime(df_closed['signal_date'])).dt.days
+            if 'expected_days' not in df_closed.columns:
+                df_closed['expected_days'] = 0
+            df_closed['expected_days'] = df_closed['expected_days'].fillna(0).astype(int)
+            df_closed['actual_days'] = df_closed['actual_days'].fillna(0).astype(int)
+
+            df_show_closed = df_closed[['ticker', 'window', 'signal_date', 'close_date', 'entry_price', 'close_price', 'status', 'pct_change', 'expected_days', 'actual_days', 'source']].copy()
+            df_show_closed.columns = ['Hisse', 'Şablon Vadesi', 'Sinyal Tarihi', 'Kapanış Tarihi', 'Giriş Fiyatı ₺', 'Kapanış Fiyatı ₺', 'Durum', 'Getiri %', 'Tahmini Ulaşma (Gün)', 'Gerçekleşen Süre (Gün)', 'Kaynak']
             
             # Renklendirme fonksiyonu
             def _color_status(val):
@@ -176,10 +189,13 @@ def render_performance_dashboard():
                 df_show_closed.style.format({
                     'Giriş Fiyatı ₺': '{:.2f}',
                     'Kapanış Fiyatı ₺': '{:.2f}',
-                    'Getiri %': '{:+.2f}%'
+                    'Getiri %': '{:+.2f}%',
+                    'Tahmini Ulaşma (Gün)': '{} gün',
+                    'Gerçekleşen Süre (Gün)': '{} gün'
                 }).map(_color_status, subset=['Durum']),
                 use_container_width=True,
                 hide_index=True
             )
+
         else:
             st.info("Kapanmış pozisyon geçmişi bulunmuyor.")

@@ -216,6 +216,8 @@ def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates
         except Exception:
             match_date_label = None
 
+    peak_days = int(np.argmax(future_closes))
+
     return {
         'sim': round(best_sim, 1),
         'fut_pct': round(fut_pct, 2),
@@ -225,7 +227,9 @@ def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates
         'future_closes': future_closes,
         'match_start_idx': best_i,
         'match_date_label': match_date_label,
+        'peak_days': peak_days,
     }
+
 
 
 def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
@@ -329,6 +333,9 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
 
     weighted_pct = float(np.dot(weights, pcts))
     weighted_max = float(np.dot(weights, maxes))
+    peak_days_arr = np.array([m.get('peak_days', 0) for m in matches])
+    expected_days = int(round(float(np.dot(weights, peak_days_arr))))
+
     up_weight = float(sum(w for w, p in zip(weights, pcts) if p > 0))
     up_count = int(sum(1 for p in pcts if p > 0))
     dispersion = float(np.std(pcts))
@@ -396,7 +403,9 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
         'index_corr': round(index_corr, 2) if index_corr is not None else None,
         'index_penalty_applied': index_penalty_applied,
         'top_matches': sorted(matches, key=lambda x: x['sim'], reverse=True)[:3],
+        'expected_days': expected_days,
     }
+
 
 
 # ── Streamlit UI ───────────────────────────────────────────────────────────────
@@ -584,7 +593,8 @@ def render_scanner(all_data_getter, bist_lists):
                      weighted_pct=r['weighted_pct'],
                      confidence=r['confidence'],
                      avg_sim=r['avg_sim'],
-                     source='manual_scan'
+                     source='manual_scan',
+                     expected_days=r['expected_days']
                  )
              for r in results_40_sorted:
                  db_utils.save_signal(
@@ -596,8 +606,10 @@ def render_scanner(all_data_getter, bist_lists):
                      weighted_pct=r['weighted_pct'],
                      confidence=r['confidence'],
                      avg_sim=r['avg_sim'],
-                     source='manual_scan'
+                     source='manual_scan',
+                     expected_days=r['expected_days']
                  )
+
         except Exception as e:
              print(f"⚠️ Veritabanına kaydederken hata: {e}")
              
@@ -746,9 +758,10 @@ def render_scanner(all_data_getter, bist_lists):
                     </div>
                     <div style='margin-top:8px;font-size:13px;color:#555'>
                         Güncel Fiyat: <b>{r20_data['current_price']:.2f} ₺</b> &nbsp;|&nbsp;
-                        Ortalama Hedef Hareket: <b style='color:#0E9F6E'>
-                        +{d['avg_expected_pct']:.1f}%</b>
+                        Ortalama Hedef: <b style='color:#0E9F6E'>+{d['avg_expected_pct']:.1f}%</b> &nbsp;|&nbsp;
+                        Tahmini Vade: <b>~{r20_data.get('expected_days', 0)} gün</b>
                     </div>
+
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -782,10 +795,12 @@ def render_scanner(all_data_getter, bist_lists):
                     'RSI':           f"{r['tpl_rsi']:.0f}",
                     '🎯 Hedef':      f"{r['target']:.2f} ₺",
                     '📈 Beklenen':   f"+{r['weighted_pct']:.1f}%",
+                    '⏳ Tahmini Vade': f"~{r.get('expected_days', 0)} gün",
                     '🔒 Güven':      f"%{r['confidence']:.0f}",
                     '✅ Oy':         f"{r['up_count']}/{r['total_matches']}",
                     '🔷 Formasyon':  fmt_str,
                 })
+
 
             st.dataframe(pd.DataFrame(rows),
                          use_container_width=True, hide_index=True)
@@ -837,7 +852,10 @@ def render_scanner(all_data_getter, bist_lists):
                             m1, m2, m3, m4 = st.columns(4)
                             m1.metric("Güncel", f"{r['current_price']:.2f} ₺")
                             m2.metric("Beklenen", f"+{r['weighted_pct']:.1f}%")
-                            m3.metric("Hedef", f"{r['target']:.2f} ₺")
+                            m3.metric("Hedef", f"{r['target']:.2f} ₺",
+                                      delta=f"~{r.get('expected_days', 0)} günde" if r.get('expected_days') else None,
+                                      delta_color="off")
+
                             rsi_label = "Aşırı satım" if r['tpl_rsi'] < 30 else "Aşırı alım" if r['tpl_rsi'] > 70 else None
                             m4.metric("RSI", f"{r['tpl_rsi']:.0f}", delta=rsi_label, delta_color="off")
 

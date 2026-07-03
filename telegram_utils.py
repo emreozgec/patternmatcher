@@ -57,10 +57,10 @@ def format_results_message(results_by_window: dict, scope: str) -> list:
                 f"🏢 <b>{ticker_esc}</b> — {r['current_price']:.2f} ₺\n"
                 f"   📈 Beklenen: {r['weighted_pct']:+.1f}% → "
                 f"🎯 Hedef: {r['target']:.2f} ₺\n"
-                f"   🔒 Güven: %{r['confidence']:.0f} | "
-                f"PSI: {r['avg_sim']:.0f} | "
-                f"Oy: {r['up_count']}/{r['total_matches']}\n"
+                f"   🔒 Güven: %{r['confidence']:.0f} | Vade: ~{r.get('expected_days', 0)} gün\n"
+                f"   PSI: {r['avg_sim']:.0f} | Oy: {r['up_count']}/{r['total_matches']}\n"
             )
+
             if r.get('index_penalty_applied'):
                 line += "   ⚠️ Piyasa geneli hareket olabilir\n"
             if r.get('formations'):

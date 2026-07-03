@@ -333,8 +333,10 @@ def run_daily_scan():
                     weighted_pct=r['weighted_pct'],
                     confidence=r['confidence'],
                     avg_sim=r['avg_sim'],
-                    source='daily_scan'
+                    source='daily_scan',
+                    expected_days=r['expected_days']
                 )
+
     except Exception as e:
         print(f"⚠️ Veritabanına kaydederken hata: {e}")
 
