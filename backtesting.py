@@ -154,8 +154,18 @@ def generate_historical_signals(
         if len(closes) >= window * 3 + fut_win:
             ticker_data[ticker] = (closes, dates)
 
-    tickers = list(ticker_data.keys())
-    n_tickers = len(tickers)
+    # 1. Aşama: Her hissenin pencereler matrisini ÖNCEDEN (1 kez) hesapla (Büyük Hız Artışı!)
+    precomputed_matrices = {}
+    step_w = max(1, window // 3)
+    for ticker, (oc, _) in ticker_data.items():
+        max_possible_end = len(oc) - fut_win - 1
+        starts = np.array(list(range(0, max_possible_end - window, step_w)))
+        if len(starts) > 0:
+            windows_z = np.array([_zscore_fast(oc[idx:idx+window]) for idx in starts])
+            precomputed_matrices[ticker] = {
+                'starts': starts,
+                'matrix': windows_z
+            }
 
     # Her tarih noktasında sinyal ara
     # Referans hisseyi döngüde, diğerleri için matris işlemi
@@ -179,12 +189,21 @@ def generate_historical_signals(
                 if avail < window * 2:
                     continue
 
-                step_w = max(1, window // 3)
-                matrix = _build_windows_matrix(oc, window, step_w, avail)
-                if matrix.shape[0] == 0:
+                cache = precomputed_matrices.get(other_ticker)
+                if cache is None:
                     continue
 
+                starts = cache['starts']
+                # Sadece avail - window öncesindeki pencere indekslerini filtrele
+                limit_idx = np.searchsorted(starts, avail - window)
+                if limit_idx == 0:
+                    continue
+
+                matrix = cache['matrix'][:limit_idx]
                 sims = _batch_pearson(tpl_z, matrix)
+                if len(sims) == 0:
+                    continue
+
                 best_idx = int(np.argmax(sims))
                 best_sim = float(sims[best_idx])
 
@@ -192,7 +211,7 @@ def generate_historical_signals(
                     continue
 
                 # Gelecek hareketi
-                win_start  = best_idx * step_w
+                win_start  = int(starts[best_idx])
                 fut_start  = win_start + window
                 fut_end    = min(fut_start + fut_win, len(oc))
                 if fut_end - fut_start < 3:
@@ -208,6 +227,7 @@ def generate_historical_signals(
 
             if len(matches) < 2:
                 continue
+
 
             # Konsensüs
             sims_arr = np.array([m['similarity'] for m in matches])
