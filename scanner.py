@@ -354,6 +354,26 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
     confidence = max(0, min(100,
         direction_conf - disp_penalty + sim_bonus + match_bonus))
 
+    # 1. Hacim Kırılımı Filtresi (Hacimli kırılımlar daha başarılıdır)
+    current_vol = float(volumes[-1])
+    avg_vol_20 = float(np.mean(volumes[-20:])) if len(volumes) >= 20 else 1.0
+    rel_vol = current_vol / (avg_vol_20 + 1e-9)
+    vol_bonus = 0
+    if rel_vol > 1.5:
+        vol_bonus = 5    # Hacimli kırılım bonusu
+    elif rel_vol < 0.5:
+        vol_bonus = -10  # Düşük hacim cezası
+
+    # 2. Endeks Trend Filtresi (Ayı piyasasında long sinyalleri cezalandırılır)
+    index_trend_bullish = True
+    index_trend_penalty = 0
+    if index_closes is not None and len(index_closes) >= 20:
+        index_trend_bullish = bool(index_closes[-1] >= np.mean(index_closes[-20:]))
+        if not index_trend_bullish:
+            index_trend_penalty = -10  # Endeks SMA20 altındaysa ceza
+
+    confidence = max(0, min(100, confidence + vol_bonus + index_trend_penalty))
+
     # Endeks korelasyonu çok yüksekse güven cezalandırılır
     index_penalty_applied = False
     if index_corr is not None and index_corr > 0.75:
@@ -362,6 +382,7 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
 
     if confidence < 45:
         return None
+
 
     target = current_price * (1 + weighted_max / 100)
 
@@ -404,7 +425,10 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
         'index_penalty_applied': index_penalty_applied,
         'top_matches': sorted(matches, key=lambda x: x['sim'], reverse=True)[:3],
         'expected_days': expected_days,
+        'relative_volume': round(rel_vol, 2),
+        'index_trend_bullish': index_trend_bullish,
     }
+
 
 
 
@@ -826,7 +850,7 @@ def render_scanner(all_data_getter, bist_lists):
                             with h2:
                                 st.metric("Güven", f"%{conf:.0f}")
 
-                            # Rozetler (piyasa geneli mi / hisseye özgü mü, dönem çeşitliliği)
+                            # Rozetler (piyasa geneli mi / hisseye özgü mü, dönem çeşitliliği, hacim kırılımı, endeks trend)
                             badge_bits = []
                             if r.get('index_penalty_applied'):
                                 badge_bits.append(f"⚠️ Piyasa geneli (%{r.get('index_corr', 0)*100:.0f})")
@@ -834,6 +858,13 @@ def render_scanner(all_data_getter, bist_lists):
                                 badge_bits.append("✅ Hisseye özgü")
                             if r.get('unique_periods', 0) >= 3:
                                 badge_bits.append(f"📅 {r['unique_periods']} farklı dönem")
+                            if r.get('relative_volume', 1.0) > 1.5:
+                                badge_bits.append("🔥 Hacimli Kırılım")
+                            elif r.get('relative_volume', 1.0) < 0.5:
+                                badge_bits.append("💤 Düşük Hacim")
+                            if not r.get('index_trend_bullish', True):
+                                badge_bits.append("⚠️ Endeks Negatif")
+
                             if badge_bits:
                                 st.caption(" · ".join(badge_bits))
 
