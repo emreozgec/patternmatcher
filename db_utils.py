@@ -28,6 +28,7 @@ def init_db():
         signal_date TEXT NOT NULL,
         entry_price REAL NOT NULL,
         target_price REAL NOT NULL,
+        stop_price REAL, -- Akıllı dinamik stop-loss seviyesi
         weighted_pct REAL,
         confidence REAL,
         avg_sim REAL,
@@ -47,6 +48,11 @@ def init_db():
     except sqlite3.OperationalError:
         pass
         
+    try:
+        cursor.execute("ALTER TABLE signals ADD COLUMN stop_price REAL")
+    except sqlite3.OperationalError:
+        pass
+        
     # Performans için indeksler
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_signals_ticker ON signals(ticker)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status)")
@@ -55,16 +61,16 @@ def init_db():
     conn.commit()
     conn.close()
 
-def save_signal(ticker, window, signal_date, entry_price, target_price, weighted_pct, confidence, avg_sim, source, expected_days=None):
+def save_signal(ticker, window, signal_date, entry_price, target_price, weighted_pct, confidence, avg_sim, source, expected_days=None, stop_price=None):
     """Yeni bir sinyali veritabanına kaydeder (mükerrer kayıtları önler)."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
         cursor.execute("""
         INSERT OR IGNORE INTO signals 
-        (ticker, window, signal_date, entry_price, target_price, weighted_pct, confidence, avg_sim, status, source, expected_days)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
-        """, (ticker, window, signal_date, entry_price, target_price, weighted_pct, confidence, avg_sim, source, expected_days))
+        (ticker, window, signal_date, entry_price, target_price, stop_price, weighted_pct, confidence, avg_sim, status, source, expected_days)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
+        """, (ticker, window, signal_date, entry_price, target_price, stop_price, weighted_pct, confidence, avg_sim, source, expected_days))
         conn.commit()
     except Exception as e:
         print(f"⚠️ Sinyal kaydedilirken hata: {e}")
@@ -76,7 +82,7 @@ def get_open_signals():
     """Açık pozisyondaki (OPEN) sinyalleri getirir."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, ticker, window, signal_date, entry_price, target_price FROM signals WHERE status = 'OPEN'")
+    cursor.execute("SELECT id, ticker, window, signal_date, entry_price, target_price, stop_price FROM signals WHERE status = 'OPEN'")
     rows = cursor.fetchall()
     conn.close()
     
@@ -88,7 +94,8 @@ def get_open_signals():
             'window': r[2],
             'signal_date': r[3],
             'entry_price': r[4],
-            'target_price': r[5]
+            'target_price': r[5],
+            'stop_price': r[6]
         })
     return signals
 
@@ -96,7 +103,7 @@ def update_signal_statuses(all_data=None):
     """
     Açık sinyalleri son fiyat verileriyle kontrol edip günceller.
     - Hedefe ulaştıysa: WIN (close_price = target_price)
-    - Stop olduysa: LOSS (stop-loss = %5, close_price = entry_price * 0.95)
+    - Stop olduysa: LOSS (close_price = stop_price)
     - 20 günlük şablon için 30 işlem günü, 40 günlük şablon için 60 işlem günü
       sonunda hedefe ulaşamadıysa: EXPIRED (close_price = son kapanış fiyatı)
     """
@@ -137,7 +144,11 @@ def update_signal_statuses(all_data=None):
             
         entry_price = sig['entry_price']
         target_price = sig['target_price']
-        stop_price = entry_price * 0.95 # %5 stop-loss
+        stop_price = sig['stop_price']
+        if stop_price is None or stop_price <= 0:
+            stop_price = entry_price * 0.95 # %5 stop-loss varsayılan
+            
+        stop_pct_val = ((stop_price - entry_price) / entry_price) * 100
         
         # Sinyal tarihinden sonraki verileri filtrele
         sig_dt = pd.to_datetime(sig['signal_date'])
@@ -164,7 +175,7 @@ def update_signal_statuses(all_data=None):
                 status = 'LOSS'
                 close_price = stop_price
                 close_date = date.strftime('%Y-%m-%d')
-                pct_change = -5.0
+                pct_change = stop_pct_val
                 break
                 
             # Hedef fiyat görüldü mü?
