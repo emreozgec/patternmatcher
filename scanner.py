@@ -79,6 +79,11 @@ def _get_cached_top_runs(ticker_key, closes, window, fut_window, k=5):
         if tpl_range > max_cons:
             continue  # Sıkışma yok, çok oynak veya zaten yükselmiş
             
+        # 1.b. Şablon penceresinin net değişimi (çöküş/düşüş veya sert yükseliş olmamalı)
+        tpl_net_change = (p_base - closes[i]) / (closes[i] + 1e-9) * 100
+        if tpl_net_change < -8.0 or tpl_net_change > 12.0:
+            continue  # Sıkışma döneminde sert düşüş ya da sert yükseliş yaşamış, yatay değil
+            
         # 2. Gelecek penceresindeki kırılım büyüklüğü (zirve getiri) kontrolü
         fut_prices = closes[i + window : i + window + fut_window]
         if len(fut_prices) == 0:
@@ -213,6 +218,41 @@ def calc_rsi(prices, n=14):
         ag = (ag*(n-1) + gains[i]) / n
         al = (al*(n-1) + losses[i]) / n
     return float(100 - 100 / (1 + ag / (al + 1e-9)))
+
+def calc_volatility_stop_pct(closes, n=20):
+    """Kapanış fiyatlarının son N günlük standart sapmasına göre dinamik stop-loss yüzdesi hesaplar."""
+    if len(closes) < n + 2:
+        return 5.0 # Varsayılan %5
+    rets = np.diff(closes[-n-1:]) / (closes[-n-1:-1] + 1e-9)
+    std = np.std(rets)
+    # 2.5 standart sapma güvenlik marjı (BIST için ideal)
+    stop_pct = std * 2.5 * 100
+    # Stop oranını mantıklı sınırlar içinde tutalım (%3 ile %10 arası)
+    return float(np.clip(stop_pct, 3.0, 10.0))
+
+def calc_bb_width_and_squeeze(closes, n=20, check_days=90):
+    """
+    20 günlük Bollinger Bant Genişliği (Band Width) hesaplar.
+    Son check_days gün içindeki en dar dilime (bottom 25% percentile) bakarak
+    volatilite sıkışması (squeeze) durumunu belirler.
+    """
+    if len(closes) < n:
+        return 1.0, False
+    widths = []
+    start_idx = max(0, len(closes) - check_days - n)
+    for i in range(start_idx, len(closes) - n + 1):
+        win = closes[i : i + n]
+        ma = np.mean(win)
+        std = np.std(win)
+        width = (4 * std) / (ma + 1e-9)
+        widths.append(width)
+        
+    if not widths:
+        return 1.0, False
+    current_width = widths[-1]
+    pct_25 = np.percentile(widths, 25)
+    squeeze_active = current_width <= pct_25
+    return current_width, squeeze_active
 
 def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates=None,
                      candidate_key=None, breakout_focused=True, candidate_volumes=None):
@@ -544,6 +584,8 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
         'expected_days': expected_days,
         'relative_volume': round(rel_vol, 2),
         'index_trend_bullish': index_trend_bullish,
+        'squeeze_active': calc_bb_width_and_squeeze(closes, n=20, check_days=90)[1],
+        'stop_pct': calc_volatility_stop_pct(closes, n=20),
     }
 
 
@@ -566,6 +608,11 @@ def render_scanner(all_data_getter, bist_lists):
             "Sadece Kırılım Öncesi Dönemleri Eşleştir",
             value=True,
             help="Hisselerin geçmişindeki en büyük yükselişler öncesindeki kalıplarla eşleştirme yapar. Hem 100 kat hızlı çalışır hem de yükseliş potansiyeli yüksek sonuçlar üretir."
+        )
+        only_bullish_index = st.checkbox(
+            "Sadece Endeks Pozitifken Sinyal Üret",
+            value=False,
+            help="BIST 100 endeksi 20 günlük hareketli ortalamasının altındayken (düşüş trendindeyken) long sinyali üretmez ve sistemi korumaya alır."
         )
     with c2:
         min_sim = st.slider("Min Benzerlik", 55, 85, 80, 1,
@@ -615,6 +662,13 @@ def render_scanner(all_data_getter, bist_lists):
                 if isinstance(xu100_raw.columns, pd.MultiIndex):
                     xu100_raw.columns = xu100_raw.columns.get_level_values(0)
                 index_closes = xu100_raw['Close'].values.astype(float)
+                
+                # Sadece Endeks Pozitifken Sinyal Üret kontrolü
+                if only_bullish_index and len(index_closes) >= 20:
+                    index_trend_bullish = bool(index_closes[-1] >= np.mean(index_closes[-20:]))
+                    if not index_trend_bullish:
+                        st.error("⚠️ BIST 100 endeksi düşüş trendinde (kapanış 20 günlük ortalamanın altında). 'Sadece Endeks Pozitifken Sinyal Üret' seçeneği aktif olduğu için tarama durduruldu.")
+                        return
         except Exception:
             index_closes = None
 
@@ -667,19 +721,20 @@ def render_scanner(all_data_getter, bist_lists):
             df = lightweight_data.get(ticker)
             if df is None or len(df) < 10:
                 return None
+            # Dinamik gevşetme için taramayı floor limit olan min_sim=55 ile yapıyoruz, filtrelemeyi sonra yapacağız
             r40 = scan_single_ticker(ticker, df, lightweight_data,
                                      window=40, fut_window=60,
-                                     min_sim=min_sim, index_closes=index_closes,
+                                     min_sim=55, index_closes=index_closes,
                                      bist100_set=bist100_set, breakout_focused=breakout_focused,
                                      max_template_change=max_tpl_change)
             r60 = scan_single_ticker(ticker, df, lightweight_data,
                                      window=60, fut_window=90,
-                                     min_sim=min_sim, index_closes=index_closes,
+                                     min_sim=55, index_closes=index_closes,
                                      bist100_set=bist100_set, breakout_focused=breakout_focused,
                                      max_template_change=max_tpl_change)
             r90 = scan_single_ticker(ticker, df, lightweight_data,
                                      window=90, fut_window=120,
-                                     min_sim=min_sim, index_closes=index_closes,
+                                     min_sim=55, index_closes=index_closes,
                                      bist100_set=bist100_set, breakout_focused=breakout_focused,
                                      max_template_change=max_tpl_change)
             return ticker, r40, r60, r90
@@ -715,11 +770,36 @@ def render_scanner(all_data_getter, bist_lists):
 
         clear_window_cache()
         
+        # Eşikleri gevşeterek en az 3 adet hisse getirme mantığı (+%5 getiri beklentisi şartıyla)
+        def relax_filter(results, user_sim, user_conf):
+            # Sadece getiri beklentisi en az %5.0 olanları dikkate al
+            valid_results = [r for r in results if r.get('weighted_pct', 0.0) >= 5.0]
+            
+            # Kademeli gevşetme seviyeleri (sim, conf)
+            steps = [
+                (user_sim, user_conf),
+                (max(55, user_sim - 5), max(45, user_conf - 5)),
+                (max(55, user_sim - 10), max(45, user_conf - 10)),
+                (55, 45)
+            ]
+            
+            for sim_th, conf_th in steps:
+                filtered = [r for r in valid_results if r['avg_sim'] >= sim_th and r['confidence'] >= conf_th]
+                if len(filtered) >= 3:
+                    return filtered
+            
+            # 3'e ulaşamazsa floor limitlere göre filtrelenmiş halini dön
+            return [r for r in valid_results if r['avg_sim'] >= 55 and r['confidence'] >= 45]
+
+        results_40_relaxed = relax_filter(results_40, min_sim, min_conf)
+        results_60_relaxed = relax_filter(results_60, min_sim, min_conf)
+        results_90_relaxed = relax_filter(results_90, min_sim, min_conf)
+
         # Sırala
         key_fn = lambda x: x['confidence'] * 0.5 + x['avg_sim'] * 0.3 + x['weighted_pct'] * 0.2
-        results_40_sorted = sorted(results_40, key=key_fn, reverse=True)
-        results_60_sorted = sorted(results_60, key=key_fn, reverse=True)
-        results_90_sorted = sorted(results_90, key=key_fn, reverse=True)
+        results_40_sorted = sorted(results_40_relaxed, key=key_fn, reverse=True)
+        results_60_sorted = sorted(results_60_relaxed, key=key_fn, reverse=True)
+        results_90_sorted = sorted(results_90_relaxed, key=key_fn, reverse=True)
 
         total_time = time.time() - start_time
         
@@ -744,6 +824,7 @@ def render_scanner(all_data_getter, bist_lists):
              today_str = datetime.today().strftime('%Y-%m-%d')
              db_utils.init_db() # Veritabanının oluşturulduğundan emin ol
              for r in results_40_sorted:
+                 stop_val = round(r['current_price'] * (1 - r['stop_pct'] / 100), 2)
                  db_utils.save_signal(
                      ticker=r['ticker'],
                      window=40,
@@ -754,7 +835,38 @@ def render_scanner(all_data_getter, bist_lists):
                      confidence=r['confidence'],
                      avg_sim=r['avg_sim'],
                      source='manual_scan',
-                     expected_days=r['expected_days']
+                     expected_days=r['expected_days'],
+                     stop_price=stop_val
+                 )
+             for r in results_60_sorted:
+                 stop_val = round(r['current_price'] * (1 - r['stop_pct'] / 100), 2)
+                 db_utils.save_signal(
+                     ticker=r['ticker'],
+                     window=60,
+                     signal_date=today_str,
+                     entry_price=r['current_price'],
+                     target_price=r['target'],
+                     weighted_pct=r['weighted_pct'],
+                     confidence=r['confidence'],
+                     avg_sim=r['avg_sim'],
+                     source='manual_scan',
+                     expected_days=r['expected_days'],
+                     stop_price=stop_val
+                 )
+             for r in results_90_sorted:
+                 stop_val = round(r['current_price'] * (1 - r['stop_pct'] / 100), 2)
+                 db_utils.save_signal(
+                     ticker=r['ticker'],
+                     window=90,
+                     signal_date=today_str,
+                     entry_price=r['current_price'],
+                     target_price=r['target'],
+                     weighted_pct=r['weighted_pct'],
+                     confidence=r['confidence'],
+                     avg_sim=r['avg_sim'],
+                     source='manual_scan',
+                     expected_days=r['expected_days'],
+                     stop_price=stop_val
                  )
 
         except Exception as e:
@@ -942,6 +1054,7 @@ def render_scanner(all_data_getter, bist_lists):
                     '🏢 Hisse':      r['ticker'],
                     '🔗 En Benzediği': top_m_str,
                     '💰 Fiyat':      f"{r['current_price']:.2f} ₺",
+                    '🛑 Stop-Loss':  f"{r['current_price'] * (1 - r['stop_pct'] / 100):.2f} ₺ (-{r['stop_pct']:.1f}%)",
                     '📊 Son {wlabel}': f"{r['tpl_change']:+.1f}%",
                     'RSI':           f"{r['tpl_rsi']:.0f}",
                     '🎯 Hedef':      f"{r['target']:.2f} ₺",
@@ -979,6 +1092,8 @@ def render_scanner(all_data_getter, bist_lists):
 
                             # Rozetler (piyasa geneli mi / hisseye özgü mü, dönem çeşitliliği, hacim kırılımı, endeks trend)
                             badge_bits = []
+                            if r.get('squeeze_active'):
+                                badge_bits.append("⚡ Sıkışma (Squeeze)")
                             if r.get('index_penalty_applied'):
                                 badge_bits.append(f"⚠️ Piyasa geneli (%{r.get('index_corr', 0)*100:.0f})")
                             elif r.get('index_corr') is not None and r['index_corr'] < 0.4:
@@ -1018,6 +1133,16 @@ def render_scanner(all_data_getter, bist_lists):
 
                             rsi_label = "Aşırı satım" if r['tpl_rsi'] < 30 else "Aşırı alım" if r['tpl_rsi'] > 70 else None
                             m4.metric("RSI", f"{r['tpl_rsi']:.0f}", delta=rsi_label, delta_color="off")
+
+                            # Dinamik Stop-Loss ve Hedef Gösterimi
+                            stop_price = r['current_price'] * (1 - r['stop_pct'] / 100)
+                            st.markdown(
+                                f"<div style='font-size:12px;color:#374151;margin:6px 0'>"
+                                f"🛑 <b>Dinamik Stop-Loss:</b> {stop_price:.2f} ₺ (-{r['stop_pct']:.1f}%)<br>"
+                                f"🎯 <b>Hedef Fiyat:</b> {r['target']:.2f} ₺ (+{r['weighted_pct']:.1f}%)"
+                                f"</div>",
+                                unsafe_allow_html=True
+                            )
 
                             # Diğer benzer dönemler
                             other_matches = (r['top_matches'][1:3]
