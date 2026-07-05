@@ -54,23 +54,50 @@ def _get_cached_top_runs(ticker_key, closes, window, fut_window, k=5):
         _RUNS_CACHE[cache_key] = []
         return []
 
+    # Dinamik kırılım ve sıkışma eşikleri
+    if window <= 40:
+        min_peak = 15.0
+        max_cons = 18.0
+    elif window <= 60:
+        min_peak = 20.0
+        max_cons = 20.0
+    else:
+        min_peak = 25.0
+        max_cons = 22.0
+
     rises = []
     for i in range(max_start + 1):
         p_base = closes[i + window - 1]
         p_end = closes[i + window + fut_window - 1]
         
-        # Son günün getirisi (net getiri) pozitif ve anlamlı (en az %3.0) olmalı
+        # 1. Şablon penceresindeki sıkışma (akümülasyon) kontrolü
+        tpl_prices = closes[i : i + window]
+        tpl_min = np.min(tpl_prices)
+        tpl_max = np.max(tpl_prices)
+        tpl_range = (tpl_max - tpl_min) / (tpl_min + 1e-9) * 100
+        
+        if tpl_range > max_cons:
+            continue  # Sıkışma yok, çok oynak veya zaten yükselmiş
+            
+        # 2. Gelecek penceresindeki kırılım büyüklüğü (zirve getiri) kontrolü
+        fut_prices = closes[i + window : i + window + fut_window]
+        if len(fut_prices) == 0:
+            continue
+        peak_price = np.max(fut_prices)
+        peak_pct = (peak_price - p_base) / (p_base + 1e-9) * 100
+        
+        # Zirve yükseliş en az min_peak olmalı ve net bitiş getirisi pozitif kalmalı (>3.0%)
         pct_end = (p_end - p_base) / (p_base + 1e-9) * 100
-        if pct_end > 3.0:
-            rises.append((pct_end, i))
+        if peak_pct >= min_peak and pct_end > 3.0:
+            rises.append((peak_pct, i))
 
-    # Net yükselişe göre büyükten küçüğe sırala
+    # Zirve yükseliş büyüklüğüne göre sırala
     rises.sort(key=lambda x: x[0], reverse=True)
 
     selected_indices = []
     min_distance = window
-    for pct, idx in rises:
-        # Çakışmayan (non-overlapping) dönemleri seçmek için kontrol
+    for peak, idx in rises:
+        # Çakışmayan (non-overlapping) dönemleri seç
         if all(abs(idx - sel_idx) >= min_distance for sel_idx in selected_indices):
             selected_indices.append(idx)
             if len(selected_indices) >= k:
@@ -188,7 +215,7 @@ def calc_rsi(prices, n=14):
     return float(100 - 100 / (1 + ag / (al + 1e-9)))
 
 def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates=None,
-                     candidate_key=None, breakout_focused=True):
+                     candidate_key=None, breakout_focused=True, candidate_volumes=None):
     """
     Aday hissenin geçmişinde şablona en benzer bölgeyi bul.
     Sadece ardında yeterli gelecek verisi olan bölgeleri tara.
@@ -281,6 +308,21 @@ def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates
 
     peak_days = int(np.argmax(future_closes))
 
+    # Şablon sıkışma aralığı (consolidation tightness)
+    tpl_min = match_closes.min()
+    tpl_max = match_closes.max()
+    tpl_range = (tpl_max - tpl_min) / (tpl_min + 1e-9) * 100
+
+    # Hacim patlaması (Volume Surge) hesabı
+    volume_surge_ratio = 1.0
+    if candidate_volumes is not None and len(candidate_volumes) > best_i + window + 5:
+        tpl_vol = candidate_volumes[best_i : best_i + window]
+        breakout_vol = candidate_volumes[best_i + window : best_i + window + 5]  # Kırılımın ilk 5 günü
+        avg_tpl_vol = np.mean(tpl_vol)
+        avg_breakout_vol = np.mean(breakout_vol)
+        if avg_tpl_vol > 1e-9:
+            volume_surge_ratio = avg_breakout_vol / avg_tpl_vol
+
     return {
         'sim': round(best_sim, 1),
         'fut_pct': round(fut_pct, 2),
@@ -291,6 +333,8 @@ def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates
         'match_start_idx': best_i,
         'match_date_label': match_date_label,
         'peak_days': peak_days,
+        'tpl_range': round(tpl_range, 1),
+        'volume_surge_ratio': round(volume_surge_ratio, 2),
     }
 
 
@@ -352,9 +396,11 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
                 continue
 
         other_closes = other_df['Close'].values.astype(float)
+        other_volumes = other_df['Volume'].values.astype(float) if 'Volume' in other_df.columns else None
         other_dates = other_df.index
         result = find_best_match(tpl_z, other_closes, window, fut_window, other_dates,
-                                 candidate_key=other_ticker, breakout_focused=breakout_focused)
+                                 candidate_key=other_ticker, breakout_focused=breakout_focused,
+                                 candidate_volumes=other_volumes)
         if result and result['sim'] >= min_sim:
             result['source'] = other_ticker
             matches.append(result)
@@ -363,9 +409,11 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
     # Bu hissenin kendi geçmişinde de ara (son window gün hariç)
     if len(closes) >= window * 3 + fut_window:
         hist_closes = closes[:-window]  # Son window günü hariç tut
+        hist_volumes = volumes[:-window] if volumes is not None else None
         hist_dates = dates[:-window]
         result = find_best_match(tpl_z, hist_closes, window, fut_window, hist_dates,
-                                 candidate_key=f"{ticker}_self", breakout_focused=breakout_focused)
+                                 candidate_key=f"{ticker}_self", breakout_focused=breakout_focused,
+                                 candidate_volumes=hist_volumes)
         if result and result['sim'] >= min_sim:
             result['source'] = f"{ticker} (geçmiş)"
             matches.append(result)
@@ -952,10 +1000,12 @@ def render_scanner(all_data_getter, bist_lists):
                             if top_match:
                                 tm_date = top_match.get('match_date_label', '')
                                 tm_sign = "📈" if top_match['fut_pct'] > 0 else "📉"
+                                surge_label = " | 🔥 Hacim Onaylı" if top_match.get('volume_surge_ratio', 1.0) > 1.5 else ""
                                 st.info(
                                     f"**🔗 En çok benzediği:** {top_match['source']}"
                                     f"{f' ({tm_date})' if tm_date else ''} — %{top_match['sim']:.0f} benzerlik\n\n"
-                                    f"O dönemden sonra: {tm_sign} **{top_match['fut_pct']:+.1f}%** hareket etti"
+                                    f"O dönemden sonra: {tm_sign} **{top_match['fut_pct']:+.1f}%** hareket etti\n\n"
+                                    f"📊 Sıkışma: %{top_match.get('tpl_range', 0.0):.1f} | Zirve: +%{top_match.get('fut_max', 0.0):.1f}{surge_label}"
                                 )
 
                             # Ana metrikler
@@ -977,10 +1027,12 @@ def render_scanner(all_data_getter, bist_lists):
                                     for m in other_matches:
                                         date_label = m.get('match_date_label', '')
                                         sign = "🟢" if m['fut_pct'] > 0 else "🔴"
+                                        surge_label = " (🔥 Hacim Onaylı)" if m.get('volume_surge_ratio', 1.0) > 1.5 else ""
                                         st.write(
                                             f"{sign} **{m['source']}**"
                                             f"{f' ({date_label})' if date_label else ''} "
-                                            f"— %{m['sim']:.0f} benzerlik → {m['fut_pct']:+.1f}%"
+                                            f"— %{m['sim']:.0f} benzerlik → {m['fut_pct']:+.1f}% "
+                                            f"(Sıkışma: %{m.get('tpl_range', 0.0):.1f} | Zirve: +%{m.get('fut_max', 0.0):.1f}){surge_label}"
                                         )
 
                             # Güven barı
