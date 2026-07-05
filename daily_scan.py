@@ -273,7 +273,7 @@ def run_daily_scan():
             r40 = scan_single_ticker(ticker, df, all_data,
                                      window=40, fut_window=60,
                                      min_sim=MIN_SIM, index_closes=index_closes)
-            if r40 and MIN_CONFIDENCE <= r40['confidence'] <= MAX_CONFIDENCE:
+            if r40 and MIN_CONFIDENCE <= r40['confidence'] <= MAX_CONFIDENCE and r40.get('weighted_pct', 0.0) >= 5.0:
                 t_res_40 = r40
         except Exception:
             pass
@@ -283,7 +283,7 @@ def run_daily_scan():
             r60 = scan_single_ticker(ticker, df, all_data,
                                      window=60, fut_window=90,
                                      min_sim=MIN_SIM, index_closes=index_closes)
-            if r60 and MIN_CONFIDENCE <= r60['confidence'] <= MAX_CONFIDENCE:
+            if r60 and MIN_CONFIDENCE <= r60['confidence'] <= MAX_CONFIDENCE and r60.get('weighted_pct', 0.0) >= 5.0:
                 t_res_60 = r60
         except Exception:
             pass
@@ -293,7 +293,7 @@ def run_daily_scan():
             r90 = scan_single_ticker(ticker, df, all_data,
                                      window=90, fut_window=120,
                                      min_sim=MIN_SIM, index_closes=index_closes)
-            if r90 and MIN_CONFIDENCE <= r90['confidence'] <= MAX_CONFIDENCE:
+            if r90 and MIN_CONFIDENCE <= r90['confidence'] <= MAX_CONFIDENCE and r90.get('weighted_pct', 0.0) >= 5.0:
                 t_res_90 = r90
         except Exception:
             pass
@@ -337,6 +337,7 @@ def run_daily_scan():
         today_str = datetime.today().strftime('%Y-%m-%d')
         for window, results in results_by_window.items():
             for r in results:
+                stop_val = round(r['current_price'] * (1 - r['stop_pct'] / 100), 2)
                 db_utils.save_signal(
                     ticker=r['ticker'],
                     window=window,
@@ -347,7 +348,8 @@ def run_daily_scan():
                     confidence=r['confidence'],
                     avg_sim=r['avg_sim'],
                     source='daily_scan',
-                    expected_days=r['expected_days']
+                    expected_days=r['expected_days'],
+                    stop_price=stop_val
                 )
 
     except Exception as e:
