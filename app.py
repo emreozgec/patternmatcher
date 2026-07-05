@@ -1542,7 +1542,7 @@ def main():
     index_corr = None
     try:
         xu100_raw = yf.download("XU100.IS", period=period,
-                                auto_adjust=True, progress=False, threads=False)
+                                auto_adjust=True, progress=False, threads=False, session=session)
         if xu100_raw is not None and not xu100_raw.empty:
             if isinstance(xu100_raw.columns, pd.MultiIndex):
                 xu100_raw.columns = xu100_raw.columns.get_level_values(0)
