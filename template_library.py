@@ -10,8 +10,15 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+import requests
 from datetime import datetime
 from typing import List, Dict, Optional
+
+# yfinance indirmelerinin engellenmesini önlemek için User-Agent tanımlı session oluştur
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+})
 
 
 # ── Veri yapısı ────────────────────────────────────────────────────────────────
@@ -561,7 +568,7 @@ def render_library(fetch_ticker_fn, find_patterns_fn,
                     try:
                         import yfinance as yf
                         xu100_raw = yf.download("XU100.IS", period="1y",
-                                                auto_adjust=True, progress=False, threads=False)
+                                                auto_adjust=True, progress=False, threads=False, session=session)
                         if xu100_raw is not None and not xu100_raw.empty:
                             if isinstance(xu100_raw.columns, pd.MultiIndex):
                                 xu100_raw.columns = xu100_raw.columns.get_level_values(0)
