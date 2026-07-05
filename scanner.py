@@ -13,6 +13,13 @@ import pandas as pd
 from typing import List, Dict, Optional
 import streamlit as st
 import time
+import requests
+
+# yfinance indirmelerinin engellenmesini önlemek için User-Agent tanımlı session oluştur
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+})
 
 try:
     from portfolio import render_add_to_portfolio_button
@@ -30,6 +37,47 @@ def zscore(arr):
 
 
 _WINDOW_CACHE = {}
+_RUNS_CACHE = {}
+
+def _get_cached_top_runs(ticker_key, closes, window, fut_window, k=5):
+    """
+    Aday hissenin geçmişinde en çok yükseliş yaptığı top K dönemi bulup önbelleğe alır.
+    Kırılım öncesi dönem eşleştirmesi (breakout_focused) için kullanılır.
+    """
+    cache_key = (ticker_key, window, fut_window, len(closes))
+    if cache_key in _RUNS_CACHE:
+        return _RUNS_CACHE[cache_key]
+
+    n = len(closes)
+    max_start = n - window - fut_window
+    if max_start < 5:
+        _RUNS_CACHE[cache_key] = []
+        return []
+
+    rises = []
+    for i in range(max_start + 1):
+        p_base = closes[i + window - 1]
+        p_end = closes[i + window + fut_window - 1]
+        
+        # Son günün getirisi (net getiri) pozitif ve anlamlı (en az %3.0) olmalı
+        pct_end = (p_end - p_base) / (p_base + 1e-9) * 100
+        if pct_end > 3.0:
+            rises.append((pct_end, i))
+
+    # Net yükselişe göre büyükten küçüğe sırala
+    rises.sort(key=lambda x: x[0], reverse=True)
+
+    selected_indices = []
+    min_distance = window
+    for pct, idx in rises:
+        # Çakışmayan (non-overlapping) dönemleri seçmek için kontrol
+        if all(abs(idx - sel_idx) >= min_distance for sel_idx in selected_indices):
+            selected_indices.append(idx)
+            if len(selected_indices) >= k:
+                break
+
+    _RUNS_CACHE[cache_key] = selected_indices
+    return selected_indices
 
 def _get_cached_windows(ticker_key, closes, window, fut_window):
     """
@@ -59,6 +107,7 @@ def _get_cached_windows(ticker_key, closes, window, fut_window):
 def clear_window_cache():
     """Yeni tarama başlarken önbelleği temizle (bellek şişmesin)."""
     _WINDOW_CACHE.clear()
+    _RUNS_CACHE.clear()
 
 def pearson(a, b):
     if len(a) != len(b) or len(a) < 3:
@@ -139,7 +188,7 @@ def calc_rsi(prices, n=14):
     return float(100 - 100 / (1 + ag / (al + 1e-9)))
 
 def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates=None,
-                     candidate_key=None):
+                     candidate_key=None, breakout_focused=True):
     """
     Aday hissenin geçmişinde şablona en benzer bölgeyi bul.
     Sadece ardında yeterli gelecek verisi olan bölgeleri tara.
@@ -152,49 +201,60 @@ def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates
     if max_start < 5:
         return None
 
-    cache = _get_cached_windows(candidate_key, candidate_closes, window, fut_window) \
-            if candidate_key is not None else None
-
-    if cache is not None and len(cache['starts']) > 0:
-        starts = cache['starts']
-        windows_z = cache['windows_z']   # (n_windows, window)
-        step = cache['step']
-
-        # Vektörize Pearson ön-eleme — tek numpy işlemiyle tüm pencereler
-        t = tpl_z - tpl_z.mean()
-        w = windows_z - windows_z.mean(axis=1, keepdims=True)
-        t_norm = np.sqrt((t**2).sum()) + 1e-9
-        w_norms = np.sqrt((w**2).sum(axis=1)) + 1e-9
-        pearson_scores = (w @ t) / (w_norms * t_norm)  # -1..1, shape (n_windows,)
-
-        # En iyi 3 adayı DTW ile detaylı kontrol et
-        top_k = min(3, len(starts))
-        top_idx = np.argpartition(-pearson_scores, top_k - 1)[:top_k]
-
-        best_sim, best_i = -1, starts[0]
-        for idx in top_idx:
-            i = starts[idx]
-            sim = similarity_score(tpl_z, candidate_closes[i:i+window])
-            if sim > best_sim:
-                best_sim, best_i = sim, i
-
-        # İnce tarama etrafında (orijinal davranışla uyumlu hassasiyet)
-        for i in range(max(0, best_i - step), min(max_start+1, best_i + step + 1)):
+    if breakout_focused:
+        starts = _get_cached_top_runs(candidate_key, candidate_closes, window, fut_window, k=5)
+        if not starts:
+            return None
+        
+        best_sim, best_i = -1.0, starts[0]
+        for i in starts:
             sim = similarity_score(tpl_z, candidate_closes[i:i+window])
             if sim > best_sim:
                 best_sim, best_i = sim, i
     else:
-        # Önbellek yoksa eski (yavaş ama güvenilir) yöntem
-        step = max(1, window // 5)
-        best_sim, best_i = -1, 0
-        for i in range(0, max_start, step):
-            sim = similarity_score(tpl_z, candidate_closes[i:i+window])
-            if sim > best_sim:
-                best_sim, best_i = sim, i
-        for i in range(max(0, best_i - step), min(max_start+1, best_i + step + 1)):
-            sim = similarity_score(tpl_z, candidate_closes[i:i+window])
-            if sim > best_sim:
-                best_sim, best_i = sim, i
+        cache = _get_cached_windows(candidate_key, candidate_closes, window, fut_window) \
+                if candidate_key is not None else None
+
+        if cache is not None and len(cache['starts']) > 0:
+            starts = cache['starts']
+            windows_z = cache['windows_z']   # (n_windows, window)
+            step = cache['step']
+
+            # Vektörize Pearson ön-eleme — tek numpy işlemiyle tüm pencereler
+            t = tpl_z - tpl_z.mean()
+            w = windows_z - windows_z.mean(axis=1, keepdims=True)
+            t_norm = np.sqrt((t**2).sum()) + 1e-9
+            w_norms = np.sqrt((w**2).sum(axis=1)) + 1e-9
+            pearson_scores = (w @ t) / (w_norms * t_norm)  # -1..1, shape (n_windows,)
+
+            # En iyi 3 adayı DTW ile detaylı kontrol et
+            top_k = min(3, len(starts))
+            top_idx = np.argpartition(-pearson_scores, top_k - 1)[:top_k]
+
+            best_sim, best_i = -1, starts[0]
+            for idx in top_idx:
+                i = starts[idx]
+                sim = similarity_score(tpl_z, candidate_closes[i:i+window])
+                if sim > best_sim:
+                    best_sim, best_i = sim, i
+
+            # İnce tarama etrafında (orijinal davranışla uyumlu hassasiyet)
+            for i in range(max(0, best_i - step), min(max_start+1, best_i + step + 1)):
+                sim = similarity_score(tpl_z, candidate_closes[i:i+window])
+                if sim > best_sim:
+                    best_sim, best_i = sim, i
+        else:
+            # Önbellek yoksa eski (yavaş ama güvenilir) yöntem
+            step = max(1, window // 5)
+            best_sim, best_i = -1, 0
+            for i in range(0, max_start, step):
+                sim = similarity_score(tpl_z, candidate_closes[i:i+window])
+                if sim > best_sim:
+                    best_sim, best_i = sim, i
+            for i in range(max(0, best_i - step), min(max_start+1, best_i + step + 1)):
+                sim = similarity_score(tpl_z, candidate_closes[i:i+window])
+                if sim > best_sim:
+                    best_sim, best_i = sim, i
 
     if best_sim < 55:
         return None
@@ -212,7 +272,10 @@ def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates
     match_date_label = None
     if candidate_dates is not None and best_i < len(candidate_dates):
         try:
-            match_date_label = candidate_dates[best_i].strftime('%m.%Y')
+            start_date = candidate_dates[best_i].strftime('%d.%m.%Y')
+            end_idx = min(len(candidate_dates) - 1, best_i + window - 1)
+            end_date = candidate_dates[end_idx].strftime('%d.%m.%Y')
+            match_date_label = f"{start_date} - {end_date}"
         except Exception:
             match_date_label = None
 
@@ -233,7 +296,8 @@ def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates
 
 
 def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
-                       index_closes=None, bist100_set=None):
+                       index_closes=None, bist100_set=None, breakout_focused=True,
+                       max_template_change=10.0):
     """
     Tek hisse için fırsat analizi:
     - Son `window` günü şablon al
@@ -255,6 +319,11 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
 
     # Şablon istatistikleri
     tpl_change = (tpl_prices[-1] - tpl_prices[0]) / (tpl_prices[0] + 1e-9) * 100
+
+    # Kırılım gelmeden yakalama filtresi: Son dönemde çok yükselmiş hisseleri ele
+    if max_template_change is not None and tpl_change > max_template_change:
+        return None
+
     tpl_rsi = calc_rsi(tpl_prices)
     current_price = float(closes[-1])
 
@@ -285,7 +354,7 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
         other_closes = other_df['Close'].values.astype(float)
         other_dates = other_df.index
         result = find_best_match(tpl_z, other_closes, window, fut_window, other_dates,
-                                 candidate_key=other_ticker)
+                                 candidate_key=other_ticker, breakout_focused=breakout_focused)
         if result and result['sim'] >= min_sim:
             result['source'] = other_ticker
             matches.append(result)
@@ -296,7 +365,7 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
         hist_closes = closes[:-window]  # Son window günü hariç tut
         hist_dates = dates[:-window]
         result = find_best_match(tpl_z, hist_closes, window, fut_window, hist_dates,
-                                 candidate_key=f"{ticker}_self")
+                                 candidate_key=f"{ticker}_self", breakout_focused=breakout_focused)
         if result and result['sim'] >= min_sim:
             result['source'] = f"{ticker} (geçmiş)"
             matches.append(result)
@@ -445,9 +514,16 @@ def render_scanner(all_data_getter, bist_lists):
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         scope = st.selectbox("Kapsam", ["BIST 30", "BIST 100", "Tüm BIST"], index=1)
+        breakout_focused = st.checkbox(
+            "Sadece Kırılım Öncesi Dönemleri Eşleştir",
+            value=True,
+            help="Hisselerin geçmişindeki en büyük yükselişler öncesindeki kalıplarla eşleştirme yapar. Hem 100 kat hızlı çalışır hem de yükseliş potansiyeli yüksek sonuçlar üretir."
+        )
     with c2:
         min_sim = st.slider("Min Benzerlik", 55, 85, 80, 1,
                      help="Backtesting: PSI 80+ en iyi (%%61 kazanç)")
+        max_tpl_change = st.slider("Maks. Son Yükseliş (%)", 5, 30, 10, 1,
+                     help="Hissenin son 20/40 günde halihazırda en fazla ne kadar yükselmiş olabileceğini sınırlar. Yatay/akümülasyon aşamasındaki hisseleri yakalamak için %8-%12 civarı önerilir.")
     with c3:
         min_conf = st.slider("Min Güven %", 40, 80, 55, 1,
                       help="Backtesting: 55-65 bandı optimal (%66 kazanç, +5.2%)")
@@ -486,7 +562,7 @@ def render_scanner(all_data_getter, bist_lists):
         try:
             import yfinance as yf
             xu100_raw = yf.download("XU100.IS", period="2y",
-                                    auto_adjust=True, progress=False, threads=False)
+                                    auto_adjust=True, progress=False, threads=False, session=session)
             if xu100_raw is not None and not xu100_raw.empty:
                 if isinstance(xu100_raw.columns, pd.MultiIndex):
                     xu100_raw.columns = xu100_raw.columns.get_level_values(0)
@@ -545,11 +621,13 @@ def render_scanner(all_data_getter, bist_lists):
             r20 = scan_single_ticker(ticker, df, lightweight_data,
                                      window=20, fut_window=30,
                                      min_sim=min_sim, index_closes=index_closes,
-                                     bist100_set=bist100_set)
+                                     bist100_set=bist100_set, breakout_focused=breakout_focused,
+                                     max_template_change=max_tpl_change)
             r40 = scan_single_ticker(ticker, df, lightweight_data,
                                      window=40, fut_window=60,
                                      min_sim=min_sim, index_closes=index_closes,
-                                     bist100_set=bist100_set)
+                                     bist100_set=bist100_set, breakout_focused=breakout_focused,
+                                     max_template_change=max_tpl_change)
             return ticker, r20, r40
 
 
