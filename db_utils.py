@@ -2,7 +2,14 @@ import os
 import sqlite3
 import pandas as pd
 import yfinance as yf
+import requests
 from datetime import datetime, timedelta
+
+# yfinance indirmelerinin engellenmesini önlemek için User-Agent tanımlı session oluştur
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+})
 
 DB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 DB_PATH = os.path.join(DB_DIR, "pattern_matcher.db")
@@ -113,7 +120,7 @@ def update_signal_statuses(all_data=None):
             try:
                 # En fazla 90 gün öncesinden bugüne kadar olan verileri çek
                 t_sym = ticker if ticker.endswith(".IS") else ticker + ".IS"
-                df = yf.download(t_sym, period="3mo", progress=False, auto_adjust=True)
+                df = yf.download(t_sym, period="3mo", progress=False, auto_adjust=True, session=session)
                 if df is not None and not df.empty:
                     if isinstance(df.columns, pd.MultiIndex):
                         df.columns = df.columns.get_level_values(0)
