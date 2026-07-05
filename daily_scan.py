@@ -59,7 +59,7 @@ MIN_SIM        = 80    # PSI 80+ optimal bant (backtesting: %61 kazanç)
 MIN_CONFIDENCE = 55    # Güven 55-65 bandı optimal (backtesting: %66 kazanç)
 MAX_CONFIDENCE = 68    # Anti-consensus filtresi
 SCAN_SCOPE     = "BIST100"   # BIST30 / BIST100 / ALL — GitHub Actions süresi için BIST100 önerilir
-WINDOWS        = [20, 40]    # Kısa ve orta vadeli şablon uzunlukları
+WINDOWS        = [40, 60, 90]    # Şablon uzunlukları
 
 # ── Tekrar bildirim önleme ──────────────────────────────────────────────────
 # Aynı hisse+vade için, bu kadar saat içinde tekrar sinyal geldiyse tekrar
@@ -264,19 +264,10 @@ def run_daily_scan():
         df = all_data.get(ticker)
         if df is None or len(df) < 10:
             return None
-        t_res_20 = None
         t_res_40 = None
+        t_res_60 = None
+        t_res_90 = None
         
-        # 20G
-        try:
-            r20 = scan_single_ticker(ticker, df, all_data,
-                                     window=20, fut_window=30,
-                                     min_sim=MIN_SIM, index_closes=index_closes)
-            if r20 and MIN_CONFIDENCE <= r20['confidence'] <= MAX_CONFIDENCE:
-                t_res_20 = r20
-        except Exception:
-            pass
-            
         # 40G
         try:
             r40 = scan_single_ticker(ticker, df, all_data,
@@ -287,7 +278,27 @@ def run_daily_scan():
         except Exception:
             pass
             
-        return t_res_20, t_res_40
+        # 60G
+        try:
+            r60 = scan_single_ticker(ticker, df, all_data,
+                                     window=60, fut_window=90,
+                                     min_sim=MIN_SIM, index_closes=index_closes)
+            if r60 and MIN_CONFIDENCE <= r60['confidence'] <= MAX_CONFIDENCE:
+                t_res_60 = r60
+        except Exception:
+            pass
+
+        # 90G
+        try:
+            r90 = scan_single_ticker(ticker, df, all_data,
+                                     window=90, fut_window=120,
+                                     min_sim=MIN_SIM, index_closes=index_closes)
+            if r90 and MIN_CONFIDENCE <= r90['confidence'] <= MAX_CONFIDENCE:
+                t_res_90 = r90
+        except Exception:
+            pass
+            
+        return t_res_40, t_res_60, t_res_90
 
     tickers_list = list(all_data.keys())
     total_tickers = len(tickers_list)
@@ -301,11 +312,13 @@ def run_daily_scan():
             try:
                 res = fut.result()
                 if res:
-                    r20, r40 = res
-                    if r20:
-                        results_by_window[20].append(r20)
+                    r40, r60, r90 = res
                     if r40:
                         results_by_window[40].append(r40)
+                    if r60:
+                        results_by_window[60].append(r60)
+                    if r90:
+                        results_by_window[90].append(r90)
             except Exception as e:
                 print(f"⚠️ {futures[fut]} taranırken hata: {e}")
 
