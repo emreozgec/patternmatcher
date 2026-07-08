@@ -1,0 +1,22 @@
+{
+    "status": "success",
+    "dataset_size": 291,
+    "win_rate": 36.42611683848797,
+    "train_accuracy": 87.5,
+    "test_accuracy": 64.40677966101694,
+    "test_precision": 40.0,
+    "feature_importances": {
+        "window": 0.009179838604193498,
+        "tpl_change": 0.09738882683693893,
+        "tpl_rsi": 0.11697763151601044,
+        "weighted_pct": 0.10637258756649415,
+        "confidence": 0.08881602188999933,
+        "avg_sim": 0.0737279114192088,
+        "unique_periods": 0.04867153309954289,
+        "dispersion": 0.10296908207722401,
+        "index_corr": 0.1066281297657529,
+        "relative_volume": 0.12331953237158394,
+        "expected_days": 0.12594890485305119,
+        "regime_val": 0.0
+    }
+}

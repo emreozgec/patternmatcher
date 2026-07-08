@@ -349,8 +349,12 @@ def run_daily_scan():
                     avg_sim=r['avg_sim'],
                     source='daily_scan',
                     expected_days=r['expected_days'],
-                    stop_price=stop_val
+                    stop_price=stop_val,
+                    ml_prob=r.get('ml_prob')
                 )
+
+
+
 
     except Exception as e:
         print(f"⚠️ Veritabanına kaydederken hata: {e}")

@@ -561,7 +561,7 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
     except Exception:
         pass
 
-    return {
+    res = {
         'ticker': ticker,
         'window': window,
         'current_price': round(current_price, 2),
@@ -587,6 +587,15 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
         'squeeze_active': calc_bb_width_and_squeeze(closes, n=20, check_days=90)[1],
         'stop_pct': calc_volatility_stop_pct(closes, n=20),
     }
+
+    try:
+        from ml_model import get_ml_win_probability
+        res['ml_prob'] = get_ml_win_probability(res)
+    except Exception:
+        res['ml_prob'] = None
+
+    return res
+
 
 
 
@@ -1050,6 +1059,7 @@ def render_scanner(all_data_getter, bist_lists):
                 fmt_str = ' / '.join(r['formations'][:2]) if r['formations'] else '—'
                 top_m = r['top_matches'][0] if r.get('top_matches') else None
                 top_m_str = f"{top_m['source']} (%{top_m['sim']:.0f})" if top_m else "—"
+                ml_prob_val = f"%{r['ml_prob']:.0f}" if r.get('ml_prob') is not None else "—"
                 rows.append({
                     '🏢 Hisse':      r['ticker'],
                     '🔗 En Benzediği': top_m_str,
@@ -1061,9 +1071,11 @@ def render_scanner(all_data_getter, bist_lists):
                     '📈 Beklenen':   f"+{r['weighted_pct']:.1f}%",
                     '⏳ Tahmini Vade': f"~{r.get('expected_days', 0)} gün",
                     '🔒 Güven':      f"%{r['confidence']:.0f}",
+                    '🤖 ML Olasılık': ml_prob_val,
                     '✅ Oy':         f"{r['up_count']}/{r['total_matches']}",
                     '🔷 Formasyon':  fmt_str,
                 })
+
 
 
             st.dataframe(pd.DataFrame(rows),
@@ -1109,6 +1121,17 @@ def render_scanner(all_data_getter, bist_lists):
 
                             if badge_bits:
                                 st.caption(" · ".join(badge_bits))
+
+                            # ML Başarı Olasılığı
+                            if r.get('ml_prob') is not None:
+                                prob_val = r['ml_prob']
+                                prob_color = "#0E9F6E" if prob_val >= 60 else ("#D97706" if prob_val >= 50 else "#EF5350")
+                                st.markdown(f"""
+                                <div style='background:#F9FAFB; border:1px solid #E5E7EB; border-radius:6px; padding:6px 12px; display:flex; justify-content:space-between; align-items:center; margin-bottom:10px'>
+                                    <span style='font-size:13px; font-weight:600; color:#374151'>🤖 ML Başarı Olasılığı</span>
+                                    <span style='font-size:15px; font-weight:700; color:{prob_color}'>%{prob_val:.0f}</span>
+                                </div>
+                                """, unsafe_allow_html=True)
 
                             # En çok benzediği hisse
                             top_match = r['top_matches'][0] if r.get('top_matches') else None

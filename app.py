@@ -1339,8 +1339,10 @@ def main():
     _pages = ["🔍 Pattern Matcher", "🔭 Fırsat Tarayıcı",
               "📈 Sinyal Performansı",
               "📚 Şablon Kütüphanesi", "📊 Backtesting",
+              "🤖 ML Meta-Model",
               "🗳️ Geri Bildirim",
               "🔔 Telegram Bildirimleri"]
+
 
 
 
@@ -1391,6 +1393,16 @@ def main():
             all_bist_lists  = {'bist30': BIST30, 'bist100': BIST100, 'all': ALL_BIST}
         )
         return
+
+    if page == "🤖 ML Meta-Model":
+        from ml_model import render_ml_model_page
+        render_ml_model_page(
+            fetch_batch_fn=fetch_batch,
+            fetch_ticker_fn=fetch_ticker,
+            bist100_list=BIST100
+        )
+        return
+
 
     if page == "📚 Şablon Kütüphanesi":
         render_library(

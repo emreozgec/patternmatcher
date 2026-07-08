@@ -38,6 +38,7 @@ def init_db():
         pct_change REAL,
         source TEXT, -- 'daily_scan', 'manual_scan'
         expected_days INTEGER, -- Hedefe ulaşma tahmini süresi (Gün)
+        ml_prob REAL, -- ML Meta-Model başarı olasılığı %
         UNIQUE(ticker, window, signal_date)
     )
     """)
@@ -45,6 +46,11 @@ def init_db():
     # Mevcut veritabanlarına kolon eklemek için (schema migration)
     try:
         cursor.execute("ALTER TABLE signals ADD COLUMN expected_days INTEGER")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE signals ADD COLUMN ml_prob REAL")
     except sqlite3.OperationalError:
         pass
         
@@ -61,21 +67,23 @@ def init_db():
     conn.commit()
     conn.close()
 
-def save_signal(ticker, window, signal_date, entry_price, target_price, weighted_pct, confidence, avg_sim, source, expected_days=None, stop_price=None):
+def save_signal(ticker, window, signal_date, entry_price, target_price, weighted_pct, confidence, avg_sim, source, expected_days=None, stop_price=None, ml_prob=None):
     """Yeni bir sinyali veritabanına kaydeder (mükerrer kayıtları önler)."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
         cursor.execute("""
         INSERT OR IGNORE INTO signals 
-        (ticker, window, signal_date, entry_price, target_price, stop_price, weighted_pct, confidence, avg_sim, status, source, expected_days)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
-        """, (ticker, window, signal_date, entry_price, target_price, stop_price, weighted_pct, confidence, avg_sim, source, expected_days))
+        (ticker, window, signal_date, entry_price, target_price, stop_price, weighted_pct, confidence, avg_sim, status, source, expected_days, ml_prob)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?)
+        """, (ticker, window, signal_date, entry_price, target_price, stop_price, weighted_pct, confidence, avg_sim, source, expected_days, ml_prob))
+
         conn.commit()
     except Exception as e:
         print(f"⚠️ Sinyal kaydedilirken hata: {e}")
     finally:
         conn.close()
+
 
 
 def get_open_signals():

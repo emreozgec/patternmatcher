@@ -141,14 +141,12 @@ def render_performance_dashboard():
             # Potansiyel getiri sütunu ekle
             df_open['pot_return'] = ((df_open['target_price'] - df_open['entry_price']) / df_open['entry_price']) * 100
             
-            # Kolay okunabilmesi için formatla
-            # expected_days yoksa NaN veya 0 gelebilir, dolgu yapalım
-            if 'expected_days' not in df_open.columns:
-                df_open['expected_days'] = 0
-            df_open['expected_days'] = df_open['expected_days'].fillna(0).astype(int)
+            if 'ml_prob' not in df_open.columns:
+                df_open['ml_prob'] = None
+            df_open['ml_prob_formatted'] = df_open['ml_prob'].apply(lambda x: f"%{x:.0f}" if pd.notnull(x) else "—")
             
-            df_show_open = df_open[['ticker', 'window', 'signal_date', 'entry_price', 'target_price', 'pot_return', 'expected_days', 'confidence', 'avg_sim', 'source']].copy()
-            df_show_open.columns = ['Hisse', 'Şablon Vadesi', 'Sinyal Tarihi', 'Giriş Fiyatı ₺', 'Hedef Fiyatı ₺', 'Potansiyel Getiri %', 'Tahmini Ulaşma (Gün)', 'Güven %', 'PSI Benzerlik', 'Kaynak']
+            df_show_open = df_open[['ticker', 'window', 'signal_date', 'entry_price', 'target_price', 'pot_return', 'expected_days', 'confidence', 'ml_prob_formatted', 'avg_sim', 'source']].copy()
+            df_show_open.columns = ['Hisse', 'Şablon Vadesi', 'Sinyal Tarihi', 'Giriş Fiyatı ₺', 'Hedef Fiyatı ₺', 'Potansiyel Getiri %', 'Tahmini Ulaşma (Gün)', 'Güven %', '🤖 ML Olasılık', 'PSI Benzerlik', 'Kaynak']
             
             st.dataframe(
                 df_show_open.style.format({
@@ -173,9 +171,13 @@ def render_performance_dashboard():
                 df_closed['expected_days'] = 0
             df_closed['expected_days'] = df_closed['expected_days'].fillna(0).astype(int)
             df_closed['actual_days'] = df_closed['actual_days'].fillna(0).astype(int)
+            
+            if 'ml_prob' not in df_closed.columns:
+                df_closed['ml_prob'] = None
+            df_closed['ml_prob_formatted'] = df_closed['ml_prob'].apply(lambda x: f"%{x:.0f}" if pd.notnull(x) else "—")
 
-            df_show_closed = df_closed[['ticker', 'window', 'signal_date', 'close_date', 'entry_price', 'close_price', 'status', 'pct_change', 'expected_days', 'actual_days', 'source']].copy()
-            df_show_closed.columns = ['Hisse', 'Şablon Vadesi', 'Sinyal Tarihi', 'Kapanış Tarihi', 'Giriş Fiyatı ₺', 'Kapanış Fiyatı ₺', 'Durum', 'Getiri %', 'Tahmini Ulaşma (Gün)', 'Gerçekleşen Süre (Gün)', 'Kaynak']
+            df_show_closed = df_closed[['ticker', 'window', 'signal_date', 'close_date', 'entry_price', 'close_price', 'status', 'pct_change', 'expected_days', 'actual_days', 'ml_prob_formatted', 'source']].copy()
+            df_show_closed.columns = ['Hisse', 'Şablon Vadesi', 'Sinyal Tarihi', 'Kapanış Tarihi', 'Giriş Fiyatı ₺', 'Kapanış Fiyatı ₺', 'Durum', 'Getiri %', 'Tahmini Ulaşma (Gün)', 'Gerçekleşen Süre (Gün)', '🤖 ML Olasılık', 'Kaynak']
             
             # Renklendirme fonksiyonu
             def _color_status(val):
@@ -184,6 +186,7 @@ def render_performance_dashboard():
                 elif val == 'LOSS':
                     return 'color: #EF5350; font-weight: bold;'
                 return 'color: #6B7280;'
+
 
             st.dataframe(
                 df_show_closed.style.format({
