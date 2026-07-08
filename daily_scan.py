@@ -264,41 +264,30 @@ def run_daily_scan():
         df = all_data.get(ticker)
         if df is None or len(df) < 10:
             return None
-        t_res_40 = None
-        t_res_60 = None
         t_res_90 = None
+        t_res_120 = None
         
-        # 40G
-        try:
-            r40 = scan_single_ticker(ticker, df, all_data,
-                                     window=40, fut_window=60,
-                                     min_sim=MIN_SIM, index_closes=index_closes)
-            if r40 and MIN_CONFIDENCE <= r40['confidence'] <= MAX_CONFIDENCE and r40.get('weighted_pct', 0.0) >= 5.0:
-                t_res_40 = r40
-        except Exception:
-            pass
-            
-        # 60G
-        try:
-            r60 = scan_single_ticker(ticker, df, all_data,
-                                     window=60, fut_window=90,
-                                     min_sim=MIN_SIM, index_closes=index_closes)
-            if r60 and MIN_CONFIDENCE <= r60['confidence'] <= MAX_CONFIDENCE and r60.get('weighted_pct', 0.0) >= 5.0:
-                t_res_60 = r60
-        except Exception:
-            pass
-
         # 90G
         try:
             r90 = scan_single_ticker(ticker, df, all_data,
-                                     window=90, fut_window=120,
+                                     window=90, fut_window=135,
                                      min_sim=MIN_SIM, index_closes=index_closes)
             if r90 and MIN_CONFIDENCE <= r90['confidence'] <= MAX_CONFIDENCE and r90.get('weighted_pct', 0.0) >= 5.0:
                 t_res_90 = r90
         except Exception:
             pass
             
-        return t_res_40, t_res_60, t_res_90
+        # 120G
+        try:
+            r120 = scan_single_ticker(ticker, df, all_data,
+                                      window=120, fut_window=180,
+                                      min_sim=MIN_SIM, index_closes=index_closes)
+            if r120 and MIN_CONFIDENCE <= r120['confidence'] <= MAX_CONFIDENCE and r120.get('weighted_pct', 0.0) >= 5.0:
+                t_res_120 = r120
+        except Exception:
+            pass
+            
+        return t_res_90, t_res_120
 
     tickers_list = list(all_data.keys())
     total_tickers = len(tickers_list)
@@ -312,13 +301,11 @@ def run_daily_scan():
             try:
                 res = fut.result()
                 if res:
-                    r40, r60, r90 = res
-                    if r40:
-                        results_by_window[40].append(r40)
-                    if r60:
-                        results_by_window[60].append(r60)
+                    r90, r120 = res
                     if r90:
                         results_by_window[90].append(r90)
+                    if r120:
+                        results_by_window[120].append(r120)
             except Exception as e:
                 print(f"⚠️ {futures[fut]} taranırken hata: {e}")
 

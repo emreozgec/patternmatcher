@@ -164,8 +164,8 @@ def update_signal_statuses(all_data=None):
         if future_df.empty:
             continue
             
-        # Vadeye göre maksimum işlem günü
-        max_days = 30 if sig['window'] == 20 else 60
+        # Vadeye göre maksimum işlem günü (Akıllı dinamik vade)
+        max_days = int(sig['window'] * 1.5)
         eval_df = future_df.head(max_days)
         
         status = 'OPEN'

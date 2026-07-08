@@ -72,7 +72,7 @@ def train_and_save_model(all_data: Dict[str, pd.DataFrame], index_closes: np.nda
     # generate_historical_signals fonksiyonuna göndermek için find_patterns_fn referansı al
     from app import find_patterns
     
-    for win in [20, 40]:
+    for win in [90, 120]:
         try:
             sigs = generate_historical_signals(
                 all_data=all_data,
@@ -134,7 +134,7 @@ def train_and_save_model(all_data: Dict[str, pd.DataFrame], index_closes: np.nda
                 
             # Gelecekteki fiyat hareketine bakarak etiketleme (Labeling)
             # max_days vade süresi
-            max_days = 30 if sig.window == 20 else 60
+            max_days = int(sig.window * 1.5)
             future_df = df[df.index > entry_dt].head(max_days)
             if future_df.empty:
                 continue

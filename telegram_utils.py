@@ -53,13 +53,14 @@ def format_results_message(results_by_window: dict, scope: str) -> list:
 
         for r in results[:10]:  # Mesaj başına max 10 hisse
             ticker_esc = html.escape(r['ticker'])
-            stop_price = r['current_price'] * 0.95
+            stop_pct = r.get('stop_pct', 5.0)
+            stop_price = r['current_price'] * (1 - stop_pct / 100)
             ml_prob_str = f" | 🤖 ML: %{r['ml_prob']:.0f}" if r.get('ml_prob') is not None else ""
             line = (
                 f"🏢 <b>{ticker_esc}</b> — {r['current_price']:.2f} ₺\n"
                 f"   📈 Beklenen: {r['weighted_pct']:+.1f}% → "
                 f"🎯 Hedef: {r['target']:.2f} ₺\n"
-                f"   🛑 Stop-Loss: {stop_price:.2f} ₺ (5%)\n"
+                f"   🛑 Stop-Loss: {stop_price:.2f} ₺ ({stop_pct:.1f}%)\n"
                 f"   🔒 Güven: %{r['confidence']:.0f} | Vade: ~{r.get('expected_days', 0)} gün{ml_prob_str}\n"
                 f"   PSI: {r['avg_sim']:.0f} | Oy: {r['up_count']}/{r['total_matches']}\n"
             )
