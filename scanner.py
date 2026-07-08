@@ -747,6 +747,7 @@ def render_scanner(all_data_getter, bist_lists):
         total_tickers = len(tickers_list)
         
         # Streamlit Cloud'da RAM taşmasını önlemek için Tüm BIST'te thread sayısını 4'e düşürüyoruz
+        max_workers = 4 if scope == "Tüm BIST" else 8
         results_90 = []
         results_120 = []
 
