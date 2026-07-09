@@ -613,6 +613,12 @@ def render_scanner(all_data_getter, bist_lists):
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         scope = st.selectbox("Kapsam", ["BIST 30", "BIST 100", "Tüm BIST"], index=1)
+        selected_windows = st.multiselect(
+            "Şablon Vadeleri", 
+            [20, 40, 60, 90, 120, 180, 250, 365], 
+            default=[90, 120],
+            help="Taranacak kalıp günlerini belirler. 180G ve 365G gibi uzun kalıplar için 5-10 yıllık veri indirilir."
+        )
         breakout_focused = st.checkbox(
             "Sadece Kırılım Öncesi Dönemleri Eşleştir",
             value=True,
@@ -662,10 +668,14 @@ def render_scanner(all_data_getter, bist_lists):
         chunk_size = 50 if scope == "Tüm BIST" else len(tickers)
         ticker_chunks = [tickers[i:i + chunk_size] for i in range(0, len(tickers), chunk_size)]
 
+        # Dinamik veri yükleme dönemi belirleme
+        max_w = max(selected_windows) if selected_windows else 120
+        scan_period = "10y" if max_w >= 180 else ("5y" if max_w >= 90 else "2y")
+
         index_closes = None
         try:
             import yfinance as yf
-            xu100_raw = yf.download("XU100.IS", period="2y",
+            xu100_raw = yf.download("XU100.IS", period=scan_period,
                                     auto_adjust=True, progress=False, threads=False, session=session)
             if xu100_raw is not None and not xu100_raw.empty:
                 if isinstance(xu100_raw.columns, pd.MultiIndex):
@@ -685,8 +695,6 @@ def render_scanner(all_data_getter, bist_lists):
 
         # Paralel Tarama hazırlığı
         start_time = time.time()
-        results_90 = []
-        results_120 = []
         
         # Progress bar elemanları
         progress_text = st.empty()
@@ -701,7 +709,7 @@ def render_scanner(all_data_getter, bist_lists):
         # 1. Aşama: Verilerin Parça Parça İndirilmesi ve Hafifletilmesi (0% - 50%)
         for idx, chunk in enumerate(ticker_chunks):
             progress_text.text(f"Veriler indiriliyor (Grup {idx + 1}/{total_chunks})...")
-            chunk_raw = all_data_getter(chunk, period="2y")
+            chunk_raw = all_data_getter(chunk, period=scan_period)
             if chunk_raw:
                 for t, df in chunk_raw.items():
                     if df is not None and not df.empty and 'Close' in df.columns:
@@ -729,18 +737,19 @@ def render_scanner(all_data_getter, bist_lists):
             df = lightweight_data.get(ticker)
             if df is None or len(df) < 10:
                 return None
-            # Dinamik gevşetme için taramayı floor limit olan min_sim=55 ile yapıyoruz, filtrelemeyi sonra yapacağız
-            r90 = scan_single_ticker(ticker, df, lightweight_data,
-                                     window=90, fut_window=135,
-                                     min_sim=55, index_closes=index_closes,
-                                     bist100_set=bist100_set, breakout_focused=breakout_focused,
-                                     max_template_change=max_tpl_change)
-            r120 = scan_single_ticker(ticker, df, lightweight_data,
-                                      window=120, fut_window=180,
-                                      min_sim=55, index_closes=index_closes,
-                                      bist100_set=bist100_set, breakout_focused=breakout_focused,
-                                      max_template_change=max_tpl_change)
-            return ticker, r90, r120
+            
+            ticker_results = {}
+            for win in selected_windows:
+                fut_win = int(win * 1.5)
+                # Dinamik gevşetme için taramayı floor limit olan min_sim=55 ile yapıyoruz, filtrelemeyi sonra yapacağız
+                r = scan_single_ticker(ticker, df, lightweight_data,
+                                       window=win, fut_window=fut_win,
+                                       min_sim=55, index_closes=index_closes,
+                                       bist100_set=bist100_set, breakout_focused=breakout_focused,
+                                       max_template_change=max_tpl_change)
+                if r:
+                    ticker_results[win] = r
+            return ticker, ticker_results
 
 
         tickers_list = list(lightweight_data.keys())
@@ -748,8 +757,7 @@ def render_scanner(all_data_getter, bist_lists):
         
         # Streamlit Cloud'da RAM taşmasını önlemek için Tüm BIST'te thread sayısını 4'e düşürüyoruz
         max_workers = 4 if scope == "Tüm BIST" else 8
-        results_90 = []
-        results_120 = []
+        results_by_window = {win: [] for win in selected_windows}
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_process_ticker_task, t): t for t in tickers_list}
@@ -758,11 +766,10 @@ def render_scanner(all_data_getter, bist_lists):
                 try:
                      res = fut.result()
                      if res:
-                          ticker, r90, r120 = res
-                          if r90 and min_conf <= r90['confidence'] <= max_conf:
-                               results_90.append(r90)
-                          if r120 and min_conf <= r120['confidence'] <= max_conf:
-                               results_120.append(r120)
+                          ticker, ticker_results = res
+                          for win, r in ticker_results.items():
+                               if min_conf <= r['confidence'] <= max_conf:
+                                    results_by_window[win].append(r)
                 except Exception as e:
                      print(f"⚠️ {futures[fut]} taranırken hata: {e}")
                 
@@ -794,20 +801,19 @@ def render_scanner(all_data_getter, bist_lists):
             # 3'e ulaşamazsa floor limitlere göre filtrelenmiş halini dön
             return [r for r in valid_results if r['avg_sim'] >= 55 and r['confidence'] >= 45]
 
-        results_90_relaxed = relax_filter(results_90, min_sim, min_conf)
-        results_120_relaxed = relax_filter(results_120, min_sim, min_conf)
-
-        # Sırala
         key_fn = lambda x: x['confidence'] * 0.5 + x['avg_sim'] * 0.3 + x['weighted_pct'] * 0.2
-        results_90_sorted = sorted(results_90_relaxed, key=key_fn, reverse=True)
-        results_120_sorted = sorted(results_120_relaxed, key=key_fn, reverse=True)
+        results_sorted_by_window = {}
+        for win in selected_windows:
+            relaxed = relax_filter(results_by_window[win], min_sim, min_conf)
+            sorted_res = sorted(relaxed, key=key_fn, reverse=True)
+            results_sorted_by_window[win] = sorted_res
+            st.session_state[f'scan_results_{win}'] = sorted_res
 
         total_time = time.time() - start_time
         
-        st.session_state['scan_results_90'] = results_90_sorted
-        st.session_state['scan_results_120'] = results_120_sorted
         st.session_state['scan_scope'] = scope
         st.session_state['scan_duration'] = total_time
+        st.session_state['scan_selected_windows'] = selected_windows
         
         # Temizle
         progress_bar.empty()
@@ -823,36 +829,22 @@ def render_scanner(all_data_getter, bist_lists):
              from datetime import datetime
              today_str = datetime.today().strftime('%Y-%m-%d')
              db_utils.init_db() # Veritabanının oluşturulduğundan emin ol
-             for r in results_90_sorted:
-                 stop_val = round(r['current_price'] * (1 - r['stop_pct'] / 100), 2)
-                 db_utils.save_signal(
-                     ticker=r['ticker'],
-                     window=90,
-                     signal_date=today_str,
-                     entry_price=r['current_price'],
-                     target_price=r['target'],
-                     weighted_pct=r['weighted_pct'],
-                     confidence=r['confidence'],
-                     avg_sim=r['avg_sim'],
-                     source='manual_scan',
-                     expected_days=r['expected_days'],
-                     stop_price=stop_val
-                 )
-             for r in results_120_sorted:
-                 stop_val = round(r['current_price'] * (1 - r['stop_pct'] / 100), 2)
-                 db_utils.save_signal(
-                     ticker=r['ticker'],
-                     window=120,
-                     signal_date=today_str,
-                     entry_price=r['current_price'],
-                     target_price=r['target'],
-                     weighted_pct=r['weighted_pct'],
-                     confidence=r['confidence'],
-                     avg_sim=r['avg_sim'],
-                     source='manual_scan',
-                     expected_days=r['expected_days'],
-                     stop_price=stop_val
-                 )
+             for win in selected_windows:
+                 for r in results_sorted_by_window[win]:
+                     stop_val = round(r['current_price'] * (1 - r['stop_pct'] / 100), 2)
+                     db_utils.save_signal(
+                         ticker=r['ticker'],
+                         window=win,
+                         signal_date=today_str,
+                         entry_price=r['current_price'],
+                         target_price=r['target'],
+                         weighted_pct=r['weighted_pct'],
+                         confidence=r['confidence'],
+                         avg_sim=r['avg_sim'],
+                         source='manual_scan',
+                         expected_days=r['expected_days'],
+                         stop_price=stop_val
+                     )
 
         except Exception as e:
              print(f"⚠️ Veritabanına kaydederken hata: {e}")
@@ -867,15 +859,15 @@ def render_scanner(all_data_getter, bist_lists):
         st.caption(f"✅ Son tarama {scan_duration:.0f} saniyede tamamlandı.")
 
     # ── Sonuçlar ──
-    r90 = st.session_state.get('scan_results_90', [])
-    r120 = st.session_state.get('scan_results_120', [])
-
-    if 'scan_results_90' not in st.session_state:
+    if 'scan_selected_windows' not in st.session_state:
         st.info("Ayarları yapıp 'Tara' butonuna basın.")
         return
 
+    selected_windows = st.session_state['scan_selected_windows']
+    results_by_window = {win: st.session_state.get(f'scan_results_{win}', []) for win in selected_windows}
+
     scope_label = st.session_state.get('scan_scope', '')
-    total_found = len(r90) + len(r120)
+    total_found = sum(len(res) for res in results_by_window.values())
 
     if total_found == 0:
         st.warning(
@@ -885,13 +877,12 @@ def render_scanner(all_data_getter, bist_lists):
         return
 
     col_suc, col_tg = st.columns([3, 1])
-    col_suc.success(f"✅ **{scope_label}** — {len(r90)} Orta/Uzun (90G) + {len(r120)} Uzun Vadeli (120G) fırsat")
+    col_suc.success(f"✅ **{scope_label}** — Toplam {total_found} adet fırsat tespiti yapıldı.")
     with col_tg:
         if st.button("📤 Telegram'a Gönder", key="manual_tg_send_btn", use_container_width=True):
             with st.spinner("Telegram'a gönderiliyor..."):
                 try:
                     from telegram_utils import send_telegram_message, format_results_message
-                    results_by_window = {90: r90, 120: r120}
                     messages = format_results_message(results_by_window, scope_label)
                     success_count = 0
                     for m in messages:
@@ -907,19 +898,21 @@ def render_scanner(all_data_getter, bist_lists):
 
 
     # ── Çoklu Şablon Doğrulama ──────────────────────────────────────────────
-    # Hem 20G hem 40G taramasında aynı hisse, aynı yönde (bullish) çıktıysa
+    # Taranan farklı vadelerden en az ikisinde aynı hisse, aynı yönde (bullish) çıktıysa
     # bu çift doğrulanmış güçlü bir sinyaldir — yanlış pozitif riski çok daha düşük.
-    tickers_90 = {r['ticker']: r for r in r90}
-    tickers_120 = {r['ticker']: r for r in r120}
-    
     multi_confirmed = []
-    all_tickers = set(tickers_90.keys()) | set(tickers_120.keys())
-    for ticker in all_tickers:
-        matched_windows = []
-        if ticker in tickers_90 and tickers_90[ticker]['weighted_pct'] > 0:
-            matched_windows.append(('90G', tickers_90[ticker]))
-        if ticker in tickers_120 and tickers_120[ticker]['weighted_pct'] > 0:
-            matched_windows.append(('120G', tickers_120[ticker]))
+    if len(selected_windows) >= 2:
+        all_tickers = set()
+        tickers_by_win = {}
+        for win in selected_windows:
+            tickers_by_win[win] = {r['ticker']: r for r in results_by_window[win]}
+            all_tickers.update(tickers_by_win[win].keys())
+            
+        for ticker in all_tickers:
+            matched_windows = []
+            for win in selected_windows:
+                if ticker in tickers_by_win[win] and tickers_by_win[win][ticker]['weighted_pct'] > 0:
+                    matched_windows.append((f"{win}G", tickers_by_win[win][ticker]))
             
         if len(matched_windows) >= 2:
             combined_conf = np.mean([w[1]['confidence'] for w in matched_windows])
@@ -950,20 +943,17 @@ def render_scanner(all_data_getter, bist_lists):
         </div>
         """, unsafe_allow_html=True)
 
-    tabs_list = ["📊 Orta/Uzun Vadeli — 90G ({})".format(len(r90)),
-                 "🚀 Uzun Vadeli — 120G ({})".format(len(r120))]
+    tabs_list = [f"📊 {win} Günlük ({len(results_by_window[win])})" for win in selected_windows]
     if multi_confirmed:
         tabs_list.append(f"⭐ Çoklu Doğrulanmış ({len(multi_confirmed)})")
 
     all_tabs = st.tabs(tabs_list)
-    tab90 = all_tabs[0]
-    tab120 = all_tabs[1]
-    tab_multi = all_tabs[2] if multi_confirmed else None
+    tab_multi = all_tabs[-1] if multi_confirmed else None
 
     if tab_multi is not None:
         with tab_multi:
             st.caption(
-                "Bu hisseler hem 90G hem 120G zaman dilimi şablonunda aynı "
+                "Bu hisseler taranan farklı şablon vadelerinin en az ikisinde aynı "
                 "yönde sinyal verdi. Farklı bağımsız zaman dilimleri aynı sonuca "
                 "ulaştığı için bu eşleşmeler yüksek güvenilirlik taşır."
             )
@@ -1008,10 +998,11 @@ def render_scanner(all_data_getter, bist_lists):
                 </div>
                 """, unsafe_allow_html=True)
 
-    for tab, results, wlabel, fut_label in [
-        (tab90, r90, "90 Günlük", "~135 gün"),
-        (tab120, r120, "120 Günlük", "~180 gün"),
-    ]:
+    for idx, win in enumerate(selected_windows):
+        tab = all_tabs[idx]
+        results = results_by_window[win]
+        wlabel = f"{win} Günlük"
+        fut_label = f"~{int(win * 1.5)} gün"
         with tab:
             if not results:
                 st.info("Bu vadede fırsat bulunamadı.")
