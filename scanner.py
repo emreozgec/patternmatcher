@@ -65,15 +65,25 @@ def _get_cached_top_runs(ticker_key, closes, window, fut_window, k=5):
         min_peak = 25.0
         max_cons = 22.0
 
+    # Rolling calculations to avoid numpy overhead inside the loop
+    closes_series = pd.Series(closes)
+    rolling_min = closes_series.rolling(window).min().values
+    rolling_max = closes_series.rolling(window).max().values
+    rolling_fut_max = closes_series.rolling(fut_window).max().values
+
     rises = []
     for i in range(max_start + 1):
         p_base = closes[i + window - 1]
         p_end = closes[i + window + fut_window - 1]
         
         # 1. Şablon penceresindeki sıkışma (akümülasyon) kontrolü
-        tpl_prices = closes[i : i + window]
-        tpl_min = np.min(tpl_prices)
-        tpl_max = np.max(tpl_prices)
+        tpl_min = rolling_min[i + window - 1]
+        tpl_max = rolling_max[i + window - 1]
+        
+        # NaN kontrolü (rolling'in ilk elemanlarında NaN olabilir)
+        if np.isnan(tpl_min) or np.isnan(tpl_max):
+            continue
+            
         tpl_range = (tpl_max - tpl_min) / (tpl_min + 1e-9) * 100
         
         if tpl_range > max_cons:
@@ -85,10 +95,10 @@ def _get_cached_top_runs(ticker_key, closes, window, fut_window, k=5):
             continue  # Sıkışma döneminde sert düşüş ya da sert yükseliş yaşamış, yatay değil
             
         # 2. Gelecek penceresindeki kırılım büyüklüğü (zirve getiri) kontrolü
-        fut_prices = closes[i + window : i + window + fut_window]
-        if len(fut_prices) == 0:
+        peak_price = rolling_fut_max[i + window + fut_window - 1]
+        if np.isnan(peak_price):
             continue
-        peak_price = np.max(fut_prices)
+            
         peak_pct = (peak_price - p_base) / (p_base + 1e-9) * 100
         
         # Zirve yükseliş en az min_peak olmalı ve net bitiş getirisi pozitif kalmalı (>3.0%)
