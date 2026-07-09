@@ -144,7 +144,7 @@ def generate_historical_signals(
     BIST 100 için ~1 dakika.
     """
     signals = []
-    fut_win = min(int(window * 1.5), 45)
+    fut_win = int(window * 1.5)
 
     # Tüm hisseleri numpy'a çevir
     ticker_data = {}
@@ -1076,8 +1076,8 @@ def _render_manual_backtest(fetch_batch_fn, find_patterns_fn, all_bist_lists: Di
     col1, col2, col3 = st.columns(3)
     with col1:
         scope      = st.selectbox("Hisse Evreni", ["BIST 30","BIST 100","Tüm BIST"], index=0)
-        window     = st.selectbox("Şablon Uzunluğu", [10, 20, 30, 40], index=2,
-                       help="Grid Search: 30 gün kategorik olarak en iyi (Sharpe 6.92 vs 3.5)")
+        window     = st.selectbox("Şablon Uzunluğu", [20, 40, 60, 90, 120, 180, 250, 365], index=3,
+                       help="Kalıp süresi uzadıkça rastgele benzerlik ihtimali azalır ve güven artar.")
         min_psi    = st.slider("Min BIST-PSI", 55, 85, 70, 1,
                         help="Grid Search doğrulaması: PSI ~70 optimal (Sharpe 6.92, %%69 kazanç)")
     with col2:
@@ -1115,8 +1115,9 @@ def _render_manual_backtest(fetch_batch_fn, find_patterns_fn, all_bist_lists: Di
 
         prog = st.progress(0, text="Veriler yükleniyor...")
         with st.spinner(""):
-            all_data = fetch_batch_fn(tickers, period="2y")
-        prog.progress(20, text=f"{len(all_data)} hisse yüklendi. Sinyaller üretiliyor...")
+            bt_period = "10y" if window >= 180 else ("5y" if window >= 90 else "2y")
+            all_data = fetch_batch_fn(tickers, period=bt_period)
+        prog.progress(20, text=f"{len(all_data)} hisse yüklendi ({bt_period} veri). Sinyaller üretiliyor...")
 
         signals = generate_historical_signals(
             all_data        = all_data,
@@ -1416,8 +1417,8 @@ def _render_grid_search(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict):
         )
     with pc3:
         window_options = st.multiselect(
-            "Şablon Uzunlukları", [10, 15, 20, 30, 40],
-            default=[20, 30], key="grid_window_vals"
+            "Şablon Uzunlukları", [20, 40, 60, 90, 120, 180],
+            default=[40, 90], key="grid_window_vals"
         )
 
     n_combos = len(psi_options) * len(conf_band_options) * len(window_options)
@@ -1442,7 +1443,9 @@ def _render_grid_search(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict):
 
         prog = st.progress(0, text="Veriler yükleniyor...")
         with st.spinner(""):
-            all_data = fetch_batch_fn(tickers, period="2y")
+            max_w = max(window_options) if window_options else 20
+            grid_period = "10y" if max_w >= 180 else ("5y" if max_w >= 90 else "2y")
+            all_data = fetch_batch_fn(tickers, period=grid_period)
 
         # Sadece son dönem seçildiyse veriyi kırp
         if g_recent_days is not None:
@@ -1563,8 +1566,8 @@ def _render_walk_forward(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict)
     wc1, wc2, wc3 = st.columns(3)
     with wc1:
         w_scope = st.selectbox("Hisse Evreni", ["BIST 30", "BIST 100"], index=0, key="wf_scope")
-        w_window = st.selectbox("Şablon Uzunluğu", [10, 20, 30, 40], index=2, key="wf_window",
-                       help="Grid Search: 30 gün en iyi sonucu verdi")
+        w_window = st.selectbox("Şablon Uzunluğu", [20, 40, 60, 90, 120, 180], index=3, key="wf_window",
+                       help="Uzun vadeli şablonlar daha tutarlı sonuçlar verebilir.")
     with wc2:
         w_psi = st.slider("Min PSI", 55, 85, 70, 1, key="wf_psi")
         w_conf_lo = st.slider("Min Güven %", 40, 70, 50, 1, key="wf_conf_lo")
@@ -1594,8 +1597,9 @@ def _render_walk_forward(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict)
 
         prog = st.progress(0, text="Veriler yükleniyor...")
         with st.spinner(""):
-            all_data = fetch_batch_fn(tickers, period="2y")
-        prog.progress(15, text=f"{len(all_data)} hisse yüklendi. Dönemlere bölünüyor...")
+            wf_period = "10y" if w_window >= 180 else ("5y" if w_window >= 90 else "2y")
+            all_data = fetch_batch_fn(tickers, period=wf_period)
+        prog.progress(15, text=f"{len(all_data)} hisse yüklendi ({wf_period} veri). Dönemlere bölünüyor...")
 
         def _wf_progress(p_idx, n_periods):
             pct = 15 + int((p_idx / n_periods) * 80)
