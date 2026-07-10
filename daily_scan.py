@@ -17,6 +17,9 @@ Ortam değişkenleri (.env veya GitHub Secrets üzerinden):
 
 import os
 import sys
+# Mock numba to prevent its binary C-extensions from importing and causing a Segmentation Fault in Streamlit Cloud.
+sys.modules['numba'] = None
+
 import json
 import time
 import html

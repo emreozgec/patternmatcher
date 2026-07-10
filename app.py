@@ -1,3 +1,7 @@
+import sys
+# Mock numba to prevent its binary C-extensions from importing and causing a Segmentation Fault in Streamlit Cloud.
+sys.modules['numba'] = None
+
 import streamlit as st
 from formations import scan_all_formations, formation_summary_score
 from bist_psi import BISTPSI, detect_regime
