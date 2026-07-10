@@ -162,22 +162,8 @@ def pearson(a, b):
         return 0.0
     return float(np.corrcoef(a, b)[0, 1])
 
-try:
-    from numba import njit
-    @njit(cache=True, nogil=True)
-    def _dtw_fast_jit(s1, s2, band):
-        n = len(s1)
-        dtw = np.full((n+1, n+1), np.inf)
-        dtw[0, 0] = 0.0
-        for i in range(1, n+1):
-            j0 = max(1, i - band)
-            j1 = min(n, i + band) + 1
-            for j in range(j0, j1):
-                cost = abs(s1[i-1] - s2[j-1])
-                dtw[i, j] = cost + min(dtw[i-1, j], dtw[i, j-1], dtw[i-1, j-1])
-        return dtw[n, n]
-except ImportError:
-    _dtw_fast_jit = None
+# Numba JIT, Streamlit Cloud konteynerlerindeki Segmentation Fault hatalarını önlemek için devre dışı bırakıldı.
+_dtw_fast_jit = None
 
 def dtw_fast(s1, s2, band=None):
     n = len(s1)
