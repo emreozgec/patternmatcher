@@ -17,8 +17,26 @@ Ortam değişkenleri (.env veya GitHub Secrets üzerinden):
 
 import os
 import sys
-# Mock numba to prevent its binary C-extensions from importing and causing a Segmentation Fault in Streamlit Cloud.
-sys.modules['numba'] = None
+import types
+
+# Streamlit Cloud'daki C-seviyesi Segmentation Fault çökmelerini önlemek için
+# Numba kütüphanesini sahte (dummy) bir Python modülü ile simüle ediyoruz.
+class DummyNumba(types.ModuleType):
+    def __init__(self):
+        super().__init__('numba')
+        self.__version__ = '0.0.0'
+    def njit(self, *args, **kwargs):
+        return lambda f: f
+    def jit(self, *args, **kwargs):
+        return lambda f: f
+    def __getattr__(self, name):
+        class DummyCallable:
+            def __call__(self, *args, **kwargs): return None
+            def __getattr__(self, n): return self
+        return DummyCallable()
+
+sys.modules['numba'] = DummyNumba()
+
 
 import json
 import time
