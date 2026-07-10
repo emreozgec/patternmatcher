@@ -588,7 +588,15 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
     except Exception:
         pass
 
+    reasons = []
+    try:
+        from rise_reason import analyze_rise_reasons
+        reasons = analyze_rise_reasons(df, window=window)
+    except Exception as e:
+        reasons = ["📊 Teknik Düzeltme"]
+
     res = {
+        'reasons': reasons,
         'ticker': ticker,
         'window': window,
         'current_price': round(current_price, 2),
@@ -1054,8 +1062,10 @@ def render_scanner(all_data_getter, bist_lists):
                 top_m = r['top_matches'][0] if r.get('top_matches') else None
                 top_m_str = f"{top_m['source']} (%{top_m['sim']:.0f})" if top_m else "—"
                 ml_prob_val = f"%{r['ml_prob']:.0f}" if r.get('ml_prob') is not None else "—"
+                reasons_str = ", ".join(r.get('reasons', [])) if r.get('reasons') else "—"
                 rows.append({
                     '🏢 Hisse':      r['ticker'],
+                    '🔍 Yükseliş Nedeni': reasons_str,
                     '🔗 En Benzediği': top_m_str,
                     '💰 Fiyat':      f"{r['current_price']:.2f} ₺",
                     '🛑 Stop-Loss':  f"{r['current_price'] * (1 - r['stop_pct'] / 100):.2f} ₺ (-{r['stop_pct']:.1f}%)",
@@ -1095,6 +1105,11 @@ def render_scanner(all_data_getter, bist_lists):
                                 st.caption(r['regime'])
                             with h2:
                                 st.metric("Güven", f"%{conf:.0f}")
+
+                            # Sebepler (Capsule rozetleri)
+                            if r.get('reasons'):
+                                badges_html = " ".join(f"<span style='background-color:#EBF5FF; color:#1E40AF; font-size:11px; font-weight:600; padding:3px 8px; border-radius:12px; margin-right:4px; display:inline-block'>{reason}</span>" for reason in r['reasons'])
+                                st.markdown(f"<div style='margin-bottom:10px'>{badges_html}</div>", unsafe_allow_html=True)
 
                             # Rozetler (piyasa geneli mi / hisseye özgü mü, dönem çeşitliliği, hacim kırılımı, endeks trend)
                             badge_bits = []

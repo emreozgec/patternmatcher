@@ -74,6 +74,9 @@ def format_results_message(results_by_window: dict, scope: str) -> list:
             if r.get('formations'):
                 fmts_esc = html.escape(', '.join(r['formations'][:2]))
                 line += f"   🔷 {fmts_esc}\n"
+            if r.get('reasons'):
+                reasons_esc = html.escape(', '.join(r['reasons']))
+                line += f"   🔍 Sebepler: {reasons_esc}\n"
             line += "\n"
 
 
