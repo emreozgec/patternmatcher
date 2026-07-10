@@ -231,18 +231,30 @@ def train_and_save_model(all_data: Dict[str, pd.DataFrame], index_closes: np.nda
     return stats
 
 
+import threading
+_LOADED_MODEL = None
+_MODEL_LOCK = threading.Lock()
+
 def get_ml_win_probability(r: dict) -> float:
     """Eğitilmiş meta-modeli yükleyerek sinyalin kazanma olasılığını döndürür."""
+    global _LOADED_MODEL
     if not os.path.exists(MODEL_PATH):
         return None
         
+    if _LOADED_MODEL is None:
+        with _MODEL_LOCK:
+            if _LOADED_MODEL is None:
+                try:
+                    with open(MODEL_PATH, "rb") as f:
+                        _LOADED_MODEL = pickle.load(f)
+                except Exception as e:
+                    print(f"⚠️ ML modeli yükleme hatası: {e}")
+                    return None
+
     try:
-        with open(MODEL_PATH, "rb") as f:
-            model = pickle.load(f)
-            
         feat_vec = np.array([extract_features_from_dict(r)])
         # Kazanma olasılığı (class 1 probability)
-        prob = model.predict_proba(feat_vec)[0, 1]
+        prob = _LOADED_MODEL.predict_proba(feat_vec)[0, 1]
         return float(prob * 100)
     except Exception as e:
         print(f"⚠️ ML modeli tahmini hatası: {e}")
