@@ -1,3 +1,15 @@
+try:
+    import streamlit.env_util as env_util
+    env_util.is_repl = lambda: False
+except ImportError:
+    pass
+
+try:
+    import streamlit.runtime.env_util as env_util
+    env_util.is_repl = lambda: False
+except ImportError:
+    pass
+
 import sys
 import types
 
@@ -2184,3 +2196,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
