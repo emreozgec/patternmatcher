@@ -80,7 +80,16 @@ MIN_SIM        = 80    # PSI 80+ optimal bant (backtesting: %61 kazanç)
 MIN_CONFIDENCE = 55    # Güven 55-65 bandı optimal (backtesting: %66 kazanç)
 MAX_CONFIDENCE = 68    # Anti-consensus filtresi
 SCAN_SCOPE     = "BIST100"   # BIST30 / BIST100 / ALL — GitHub Actions süresi için BIST100 önerilir
-WINDOWS        = [40, 60, 90]    # Şablon uzunlukları
+WINDOWS        = [40, 60, 90]    # Şablon uzunlukları (Telegram sinyalleri için — kullanılmıyor, bkz. 90/120 altta)
+
+# ── Fırsat Tarayıcı önbelleği ────────────────────────────────────────────────
+# Streamlit'teki interaktif sayfa artık CANLI hesaplama yapmıyor — bunun yerine
+# burada üretilen JSON dosyasını okuyup anında gösteriyor. Ağır hesaplama
+# (DTW/eşleştirme) GitHub Actions'ın kendi CPU'sunda, Streamlit Cloud'un
+# kısıtlı ücretsiz katmanının dışında yapılıyor.
+CACHE_WINDOWS = [10, 20, 30, 90, 120]
+CACHE_MIN_SIM = 55  # Gevşek eşik — Streamlit tarafı kendi Min Benzerlik/Güven filtrelerini üstüne uygular
+RESULTS_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "latest_scan_results.json")
 
 # ── Tekrar bildirim önleme ──────────────────────────────────────────────────
 # Aynı hisse+vade için, bu kadar saat içinde tekrar sinyal geldiyse tekrar
@@ -245,6 +254,116 @@ def update_history_with_sent(results_by_window: dict, history: dict) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# FIRSAT TARAYICI ÖNBELLEĞİ — Streamlit sayfasının okuyacağı JSON'u üretir
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _clean_result_for_json(r):
+    """
+    scan_single_ticker() sonucundan, arayüzün gösterdiği alanlar dışındakileri
+    (numpy dizileri: match_closes, future_closes) çıkarıp JSON'a yazılabilir
+    hale getirir. Bu diziler zaten arayüzde gösterilmiyor, boşuna yer kaplamasınlar.
+    """
+    top_matches = [
+        {
+            'source': m.get('source'),
+            'sim': m.get('sim'),
+            'fut_pct': m.get('fut_pct'),
+            'match_date_label': m.get('match_date_label'),
+        }
+        for m in r.get('top_matches', [])
+    ]
+    return {
+        'ticker': r['ticker'],
+        'window': r['window'],
+        'current_price': r['current_price'],
+        'tpl_change': r['tpl_change'],
+        'tpl_rsi': r['tpl_rsi'],
+        'weighted_pct': r['weighted_pct'],
+        'target': r['target'],
+        'weighted_max': r['weighted_max'],
+        'stop_pct': r['stop_pct'],
+        'expected_days': r['expected_days'],
+        'ml_prob': r.get('ml_prob'),
+        'confidence': r['confidence'],
+        'avg_sim': r['avg_sim'],
+        'up_count': r['up_count'],
+        'total_matches': r['total_matches'],
+        'unique_periods': r['unique_periods'],
+        'dispersion': r['dispersion'],
+        'regime': r['regime'],
+        'formations': r['formations'],
+        'index_corr': r['index_corr'],
+        'index_penalty_applied': r['index_penalty_applied'],
+        'top_matches': top_matches,
+    }
+
+
+def run_cache_scan(all_data, index_closes):
+    """
+    Fırsat Tarayıcı sayfasının anında gösterebilmesi için, birden fazla şablon
+    uzunluğunda (CACHE_WINDOWS) gevşek bir eşikle (CACHE_MIN_SIM) tam tarama
+    yapar ve sonucu data/latest_scan_results.json'a yazar. Streamlit tarafı bu
+    dosyayı okuyup kendi Min Benzerlik / Min Güven / Maks Beklenen Gün
+    filtrelerini üstüne uygular — hiçbir canlı DTW hesaplaması yapmaz.
+    """
+    import concurrent.futures
+
+    results_by_window = {w: [] for w in CACHE_WINDOWS}
+    tickers_list = list(all_data.keys())
+
+    def _scan_all_windows(ticker):
+        df = all_data.get(ticker)
+        if df is None or len(df) < 10:
+            return []
+        out = []
+        for w in CACHE_WINDOWS:
+            try:
+                fut_w = int(w * 1.5)
+                r = scan_single_ticker(ticker, df, all_data, window=w, fut_window=fut_w,
+                                        min_sim=CACHE_MIN_SIM, index_closes=index_closes)
+                if r:
+                    out.append(_clean_result_for_json(r))
+            except Exception:
+                continue
+        return out
+
+    print(f"📦 Önbellek taraması başlıyor ({len(CACHE_WINDOWS)} pencere × {len(tickers_list)} hisse)...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(_scan_all_windows, t): t for t in tickers_list}
+        for idx, fut in enumerate(concurrent.futures.as_completed(futures)):
+            if (idx + 1) % 20 == 0 or (idx + 1) == len(tickers_list):
+                print(f"   ... önbellek: {idx + 1}/{len(tickers_list)} hisse")
+            try:
+                for item in fut.result():
+                    results_by_window[item['window']].append(item)
+            except Exception as e:
+                print(f"⚠️ {futures[fut]} önbellek taramasında hata: {e}")
+
+    for w in results_by_window:
+        results_by_window[w].sort(
+            key=lambda x: x['confidence'] * 0.5 + x['avg_sim'] * 0.3 + x['weighted_pct'] * 0.2,
+            reverse=True
+        )
+
+    cache_total = sum(len(v) for v in results_by_window.values())
+    print(f"📦 Önbellek: toplam {cache_total} sonuç bulundu, yazılıyor...")
+
+    os.makedirs(os.path.dirname(RESULTS_CACHE_FILE), exist_ok=True)
+    payload = {
+        'generated_at': datetime.now().isoformat(timespec='seconds'),
+        'scope': SCAN_SCOPE,
+        'windows': CACHE_WINDOWS,
+        'results_by_window': {str(w): v for w, v in results_by_window.items()},
+    }
+    try:
+        with open(RESULTS_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        print(f"✅ Önbellek dosyası yazıldı: {RESULTS_CACHE_FILE}")
+    except Exception as e:
+        print(f"⚠️ Önbellek dosyası yazılamadı: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # TELEGRAM BİLDİRİMİ (MODÜLDEN YÜKLENİR)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -366,6 +485,12 @@ def run_daily_scan():
 
     except Exception as e:
         print(f"⚠️ Veritabanına kaydederken hata: {e}")
+
+    # ── Fırsat Tarayıcı önbelleğini üret (Streamlit sayfası bunu okuyacak) ───
+    try:
+        run_cache_scan(all_data, index_closes)
+    except Exception as e:
+        print(f"⚠️ Önbellek taraması sırasında hata: {e}")
 
 
 
