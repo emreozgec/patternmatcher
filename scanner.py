@@ -365,6 +365,25 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
     up_count = int(sum(1 for p in pcts if p > 0))
     dispersion = float(np.std(pcts))
 
+    # ── YENİ: Dinamik stop-loss ve beklenen süre ────────────────────────────
+    # Eşleşmelerin gerçek geçmişinden türetilir — sabit/uydurma değil.
+    # NOT: stop_pct POZİTİF bir yüzde (düşüş büyüklüğü) olarak tutulur —
+    # daily_scan.py bunu current_price * (1 - stop_pct/100) ile kullanıyor.
+    mins = np.array([m['fut_min'] for m in matches])
+    weighted_min = float(np.dot(weights, mins))  # genelde negatif (düşüş)
+    downside_magnitude = -weighted_min if weighted_min < 0 else 0.0
+    # Güvenlik payı: en az %3, en fazla %15 (aşırı dar/geniş stop'u engelle)
+    stop_pct = round(min(15.0, max(3.0, downside_magnitude)), 2)
+
+    days_to_peak = []
+    for m in matches:
+        fc = m.get('future_closes')
+        if fc is not None and len(fc) > 0:
+            days_to_peak.append(int(np.argmax(fc)) + 1)
+        else:
+            days_to_peak.append(fut_window)
+    expected_days = int(round(float(np.dot(weights, np.array(days_to_peak, dtype=float)))))
+
     if up_weight < 0.55:
         return None
 
@@ -411,6 +430,9 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
         'weighted_pct': round(weighted_pct, 2),
         'target': round(target, 2),
         'weighted_max': round(weighted_max, 2),
+        'stop_pct': stop_pct,
+        'expected_days': expected_days,
+        'ml_prob': None,
         'confidence': round(confidence, 1),
         'avg_sim': round(avg_sim, 1),
         'up_count': up_count,
