@@ -461,9 +461,15 @@ def render_scanner(all_data_getter, bist_lists):
     with c1:
         scope = st.selectbox("Kapsam", ["BIST 30", "BIST 100", "Tüm BIST"], index=1)
     with c2:
+        window_options = st.multiselect(
+            "Şablon Uzunlukları (gün)", [90, 120, 180, 240, 360],
+            default=[90, 120],
+            help="Her şablon uzunluğu ayrı taranır ve ayrı sekmede gösterilir. "
+                 "fut_window otomatik olarak şablonun 1.5 katı alınır."
+        )
+    with c3:
         min_sim = st.slider("Min Benzerlik", 55, 85, 80, 1,
                              help="Backtesting: PSI 80+ en iyi (%%61 kazanç)")
-    with c3:
         min_conf = st.slider("Min Güven %", 40, 80, 55, 1,
                               help="Backtesting: 55-65 bandı optimal (%66 kazanç, +5.2%)")
         max_conf = st.slider("Maks Güven %", 60, 100, 68, 1,
@@ -471,6 +477,10 @@ def render_scanner(all_data_getter, bist_lists):
     with c4:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         scan_btn = st.button("🔭 Tara", type="primary", use_container_width=True)
+
+    if not window_options:
+        st.warning("En az bir şablon uzunluğu seçmelisiniz.")
+        return
 
     st.markdown("""
     <div style='background:#FFF7ED;border:1px solid #FED7AA;border-radius:8px;
@@ -511,28 +521,29 @@ def render_scanner(all_data_getter, bist_lists):
 
         clear_window_cache()
 
-        # ── YENİ: Tarama başlamadan önce window bank'leri bir kez kur ───────
-        with st.spinner("Karşılaştırma bankası hazırlanıyor..."):
-            window_bank_20 = build_window_bank(all_data, window=20, fut_window=30)
-            window_bank_40 = build_window_bank(all_data, window=40, fut_window=60)
+        # ── Tarama başlamadan önce her seçili pencere için bir kez banka kur ──
+        with st.spinner("Karşılaştırma bankaları hazırlanıyor..."):
+            window_banks = {
+                w: build_window_bank(all_data, window=w, fut_window=int(w * 1.5))
+                for w in window_options
+            }
 
         st.session_state['scan_job'] = {
             'tickers': list(all_data.keys()),
             'all_data': all_data,
             'index_closes': index_closes,
-            'window_bank_20': window_bank_20,
-            'window_bank_40': window_bank_40,
+            'windows': list(window_options),
+            'window_banks': window_banks,
             'min_sim': min_sim,
             'min_conf': min_conf,
             'max_conf': max_conf,
             'scope': scope,
             'cursor': 0,
-            'results_20': [],
-            'results_40': [],
+            'results': {w: [] for w in window_options},
             'start_time': time.time(),
         }
-        st.session_state.pop('scan_results_20', None)
-        st.session_state.pop('scan_results_40', None)
+        st.session_state.pop('scan_results', None)
+        st.session_state.pop('scan_windows', None)
         st.rerun()
 
     job = st.session_state.get('scan_job')
@@ -548,9 +559,10 @@ def render_scanner(all_data_getter, bist_lists):
         elapsed = time.time() - job['start_time']
         rate = cursor / elapsed if elapsed > 0 and cursor > 0 else 0
         remaining = (total - cursor) / rate if rate > 0 else 0
+        found_so_far = sum(len(v) for v in job['results'].values())
         eta_text.caption(
             f"⏱️ Geçen: {elapsed:.0f}sn | Tahmini kalan: {remaining:.0f}sn | "
-            f"Bulunan: {len(job['results_20']) + len(job['results_40'])} fırsat | "
+            f"Bulunan: {found_so_far} fırsat | "
             f"Bu sayfa otomatik ilerleyecek — kapatmayın"
         )
 
@@ -561,20 +573,14 @@ def render_scanner(all_data_getter, bist_lists):
 
         for ticker in chunk_tickers:
             df = job['all_data'][ticker]
-
-            r20 = scan_single_ticker(ticker, df, job['all_data'],
-                                      window=20, fut_window=30,
-                                      min_sim=job['min_sim'], index_closes=job['index_closes'],
-                                      bank=job.get('window_bank_20'))
-            if r20 and job['min_conf'] <= r20['confidence'] <= job['max_conf']:
-                job['results_20'].append(r20)
-
-            r40 = scan_single_ticker(ticker, df, job['all_data'],
-                                      window=40, fut_window=60,
-                                      min_sim=job['min_sim'], index_closes=job['index_closes'],
-                                      bank=job.get('window_bank_40'))
-            if r40 and job['min_conf'] <= r40['confidence'] <= job['max_conf']:
-                job['results_40'].append(r40)
+            for w in job['windows']:
+                fut_w = int(w * 1.5)
+                r = scan_single_ticker(ticker, df, job['all_data'],
+                                        window=w, fut_window=fut_w,
+                                        min_sim=job['min_sim'], index_closes=job['index_closes'],
+                                        bank=job['window_banks'].get(w))
+                if r and job['min_conf'] <= r['confidence'] <= job['max_conf']:
+                    job['results'][w].append(r)
 
         job['cursor'] = chunk_end
         st.session_state['scan_job'] = job
@@ -585,12 +591,12 @@ def render_scanner(all_data_getter, bist_lists):
         else:
             clear_window_cache()
             key_fn = lambda x: x['confidence'] * 0.5 + x['avg_sim'] * 0.3 + x['weighted_pct'] * 0.2
-            results_20 = sorted(job['results_20'], key=key_fn, reverse=True)
-            results_40 = sorted(job['results_40'], key=key_fn, reverse=True)
+            sorted_results = {w: sorted(rs, key=key_fn, reverse=True)
+                               for w, rs in job['results'].items()}
 
             total_time = time.time() - job['start_time']
-            st.session_state['scan_results_20'] = results_20
-            st.session_state['scan_results_40'] = results_40
+            st.session_state['scan_results'] = sorted_results
+            st.session_state['scan_windows'] = job['windows']
             st.session_state['scan_scope'] = job['scope']
             st.session_state['scan_duration'] = total_time
             st.session_state.pop('scan_job', None)
@@ -604,15 +610,15 @@ def render_scanner(all_data_getter, bist_lists):
     if scan_duration:
         st.caption(f"✅ Son tarama {scan_duration:.0f} saniyede tamamlandı.")
 
-    r20 = st.session_state.get('scan_results_20', [])
-    r40 = st.session_state.get('scan_results_40', [])
+    results_by_window = st.session_state.get('scan_results', {})
+    scan_windows = st.session_state.get('scan_windows', [])
 
-    if 'scan_results_20' not in st.session_state:
+    if 'scan_results' not in st.session_state:
         st.info("Ayarları yapıp 'Tara' butonuna basın.")
         return
 
     scope_label = st.session_state.get('scan_scope', '')
-    total_found = len(r20) + len(r40)
+    total_found = sum(len(v) for v in results_by_window.values())
 
     if total_found == 0:
         st.warning(
@@ -621,67 +627,88 @@ def render_scanner(all_data_getter, bist_lists):
         )
         return
 
-    st.success(f"✅ **{scope_label}** — {len(r20)} kısa vadeli + {len(r40)} orta vadeli fırsat")
+    found_summary = " + ".join(
+        f"{len(results_by_window.get(w, []))} adet {w}G" for w in scan_windows
+    )
+    st.success(f"✅ **{scope_label}** — {found_summary} fırsat")
 
-    tickers_20 = {r['ticker']: r for r in r20}
-    tickers_40 = {r['ticker']: r for r in r40}
-    dual_confirmed = []
-    for ticker in set(tickers_20.keys()) & set(tickers_40.keys()):
-        r_20 = tickers_20[ticker]
-        r_40 = tickers_40[ticker]
-        if r_20['weighted_pct'] > 0 and r_40['weighted_pct'] > 0:
-            combined_conf = (r_20['confidence'] + r_40['confidence']) / 2
-            combined_sim = (r_20['avg_sim'] + r_40['avg_sim']) / 2
-            dual_confirmed.append({
-                'ticker': ticker,
-                'r20': r_20,
-                'r40': r_40,
-                'combined_confidence': round(combined_conf, 1),
-                'combined_similarity': round(combined_sim, 1),
-                'avg_expected_pct': round((r_20['weighted_pct'] + r_40['weighted_pct']) / 2, 2),
-            })
-    dual_confirmed.sort(key=lambda x: x['combined_confidence'], reverse=True)
+    # ── Çoklu Şablon Doğrulama ────────────────────────────────────────────────
+    # Bir hisse SEÇİLİ TÜM pencerelerde aynı yönde (bullish) çıktıysa bu
+    # çift/çoklu doğrulanmış güçlü bir sinyaldir — yanlış pozitif riski düşer.
+    multi_confirmed = []
+    if len(scan_windows) >= 2:
+        by_ticker = {}
+        for w in scan_windows:
+            for r in results_by_window.get(w, []):
+                by_ticker.setdefault(r['ticker'], {})[w] = r
 
-    if dual_confirmed:
+        for ticker, per_window in by_ticker.items():
+            if len(per_window) == len(scan_windows) and \
+               all(per_window[w]['weighted_pct'] > 0 for w in scan_windows):
+                combined_conf = float(np.mean([per_window[w]['confidence'] for w in scan_windows]))
+                combined_sim = float(np.mean([per_window[w]['avg_sim'] for w in scan_windows]))
+                avg_pct = float(np.mean([per_window[w]['weighted_pct'] for w in scan_windows]))
+                multi_confirmed.append({
+                    'ticker': ticker,
+                    'per_window': per_window,
+                    'combined_confidence': round(combined_conf, 1),
+                    'combined_similarity': round(combined_sim, 1),
+                    'avg_expected_pct': round(avg_pct, 2),
+                })
+        multi_confirmed.sort(key=lambda x: x['combined_confidence'], reverse=True)
+
+    if multi_confirmed:
+        windows_label = "+".join(f"{w}G" for w in scan_windows)
         st.markdown(f"""
         <div style='background:linear-gradient(135deg,#F0FDF4,#FFFFFF);
         border:1.5px solid #0E9F6E;border-radius:10px;
         padding:14px 18px;margin:12px 0'>
         <div style='font-size:14px;font-weight:700;color:#0E9F6E'>
-        ⭐ {len(dual_confirmed)} Hisse Çift Doğrulanmış!
+        ⭐ {len(multi_confirmed)} Hisse Çoklu Doğrulanmış!
         </div>
         <div style='font-size:12px;color:#555;margin-top:4px'>
-        Hem 20 günlük hem 40 günlük şablonda aynı yönde sinyal verdi —
+        Seçili tüm pencerelerde ({windows_label}) aynı yönde sinyal verdi —
         yanlış pozitif riski normal sinyallere göre daha düşüktür.
         </div>
         </div>
         """, unsafe_allow_html=True)
 
-    tabs_list = ["📊 Kısa Vadeli — 20G ({})".format(len(r20)),
-                 "📈 Orta Vadeli — 40G ({})".format(len(r40))]
-    if dual_confirmed:
-        tabs_list.append(f"⭐ Çift Doğrulanmış ({len(dual_confirmed)})")
+    tabs_list = [f"📊 {w}G ({len(results_by_window.get(w, []))})" for w in scan_windows]
+    if multi_confirmed:
+        tabs_list.append(f"⭐ Çoklu Doğrulanmış ({len(multi_confirmed)})")
     all_tabs = st.tabs(tabs_list)
-    tab20, tab40 = all_tabs[0], all_tabs[1]
-    tab_dual = all_tabs[2] if dual_confirmed else None
+    window_tabs = dict(zip(scan_windows, all_tabs[:len(scan_windows)]))
+    tab_multi = all_tabs[len(scan_windows)] if multi_confirmed else None
 
-    if tab_dual is not None:
-        with tab_dual:
+    if tab_multi is not None:
+        with tab_multi:
+            windows_label = "+".join(f"{w}G" for w in scan_windows)
             st.caption(
-                "Bu hisseler hem kısa (20G) hem orta (40G) vadeli taramada aynı "
-                "yönde sinyal verdi. İki bağımsız zaman dilimi aynı sonuca "
-                "ulaştığı için bu eşleşmeler özellikle dikkate değer."
+                f"Bu hisseler seçili tüm pencerelerde ({windows_label}) aynı "
+                "yönde sinyal verdi. Birden fazla bağımsız zaman dilimi aynı "
+                "sonuca ulaştığı için bu eşleşmeler özellikle dikkate değer."
             )
             dc1, dc2, dc3 = st.columns(3)
-            dc1.metric("Çift Doğrulanan", f"{len(dual_confirmed)} hisse")
+            dc1.metric("Çoklu Doğrulanan", f"{len(multi_confirmed)} hisse")
             dc2.metric("Ort. Birleşik Güven",
-                       f"%{np.mean([d['combined_confidence'] for d in dual_confirmed]):.0f}")
+                       f"%{np.mean([d['combined_confidence'] for d in multi_confirmed]):.0f}")
             dc3.metric("Ort. Beklenen Hareket",
-                       f"+{np.mean([d['avg_expected_pct'] for d in dual_confirmed]):.1f}%")
+                       f"+{np.mean([d['avg_expected_pct'] for d in multi_confirmed]):.1f}%")
 
-            for d in dual_confirmed:
-                r20_data = d['r20']
-                r40_data = d['r40']
+            for d in multi_confirmed:
+                window_blocks = ""
+                for w in scan_windows:
+                    rw = d['per_window'][w]
+                    window_blocks += f"""
+                    <div style='flex:1;background:#F9FAFB;border-radius:6px;padding:8px 10px'>
+                    <div style='font-size:10px;color:#888'>{w}G ŞABLON</div>
+                    <div style='font-size:13px;color:#1A1A2E'>
+                    Güven: %{rw['confidence']:.0f} |
+                    Beklenen: {rw['weighted_pct']:+.1f}%
+                    </div>
+                    </div>
+                    """
+                any_row = next(iter(d['per_window'].values()))
                 st.markdown(f"""
                 <div style='background:#FFFFFF;border:1.5px solid #0E9F6E;
                 border-radius:10px;padding:14px 16px;margin:10px 0'>
@@ -696,34 +723,23 @@ def render_scanner(all_data_getter, bist_lists):
                 </div>
                 </div>
                 </div>
-                <div style='display:flex;gap:16px;margin-top:10px'>
-                <div style='flex:1;background:#F9FAFB;border-radius:6px;padding:8px 10px'>
-                <div style='font-size:10px;color:#888'>20G ŞABLON</div>
-                <div style='font-size:13px;color:#1A1A2E'>
-                Güven: %{r20_data['confidence']:.0f} |
-                Beklenen: {r20_data['weighted_pct']:+.1f}%
-                </div>
-                </div>
-                <div style='flex:1;background:#F9FAFB;border-radius:6px;padding:8px 10px'>
-                <div style='font-size:10px;color:#888'>40G ŞABLON</div>
-                <div style='font-size:13px;color:#1A1A2E'>
-                Güven: %{r40_data['confidence']:.0f} |
-                Beklenen: {r40_data['weighted_pct']:+.1f}%
-                </div>
-                </div>
+                <div style='display:flex;gap:16px;margin-top:10px;flex-wrap:wrap'>
+                {window_blocks}
                 </div>
                 <div style='margin-top:8px;font-size:13px;color:#555'>
-                Güncel Fiyat: <b>{r20_data['current_price']:.2f} ₺</b> &nbsp;|&nbsp;
+                Güncel Fiyat: <b>{any_row['current_price']:.2f} ₺</b> &nbsp;|&nbsp;
                 Ortalama Hedef Hareket: <b style='color:#0E9F6E'>
                 +{d['avg_expected_pct']:.1f}%</b>
                 </div>
                 </div>
                 """, unsafe_allow_html=True)
 
-    for tab, results, wlabel, fut_label in [
-        (tab20, r20, "20 Günlük", "~30 gün"),
-        (tab40, r40, "40 Günlük", "~60 gün"),
-    ]:
+    for w in scan_windows:
+        tab = window_tabs[w]
+        results = results_by_window.get(w, [])
+        wlabel = f"{w} Günlük"
+        fut_label = f"~{int(w * 1.5)} gün"
+
         with tab:
             if not results:
                 st.info("Bu vadede fırsat bulunamadı.")
