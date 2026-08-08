@@ -460,9 +460,6 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
     }
 
 
-# ── Streamlit UI ───────────────────────────────────────────────────────────────
-
-
 def render_scanner(all_data_getter, bist_lists):
     st.markdown("## 🔭 BIST Fırsat Tarayıcı")
     st.caption(
@@ -471,73 +468,18 @@ def render_scanner(all_data_getter, bist_lists):
     )
     st.divider()
 
-    # ── Önbellekten oku — CANLI HESAPLAMA YOK ────────────────────────────────
-    # Ağır tarama artık burada değil, GitHub Actions'ta (daily_scan.py içindeki
-    # run_cache_scan) çalışıyor ve sonucu data/latest_scan_results.json'a
-    # yazıyor. Bu sayfa sadece o dosyayı okuyup anında filtreliyor — bu yüzden
-    # Streamlit Cloud'un kısıtlı CPU'suna takılmadan hemen açılır.
-    cache_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "data", "latest_scan_results.json")
-
-    top_c1, top_c2 = st.columns([3, 1])
-    with top_c2:
-        if st.button("🔄 Önbelleği Yenile", use_container_width=True,
-                      help="Dosyayı diskten tekrar oku — GitHub Actions arka planda "
-                           "güncellemiş olabilir (her 2 saatte bir hafta içi çalışır)."):
-            st.session_state.pop('_scan_cache', None)
-            st.rerun()
-
-    if '_scan_cache' not in st.session_state:
-        if not os.path.exists(cache_path):
-            st.warning(
-                "Henüz bir tarama önbelleği yok. GitHub Actions'taki 'BİST Fırsat "
-                "Taraması' workflow'unun en az bir kez çalışmasını bekleyin — "
-                "Actions sekmesinden 'Run workflow' ile elle de tetikleyebilirsiniz."
-            )
-            return
-        try:
-            with open(cache_path, 'r', encoding='utf-8') as f:
-                st.session_state['_scan_cache'] = json.load(f)
-        except Exception as e:
-            st.error(f"Önbellek dosyası okunamadı: {e}")
-            return
-
-    cache = st.session_state['_scan_cache']
-    generated_at = cache.get('generated_at')
-    cache_windows_available = cache.get('windows', [])
-    cache_scope = cache.get('scope', '—')
-
-    with top_c1:
-        if generated_at:
-            try:
-                gen_dt = datetime.fromisoformat(generated_at)
-                age_min = (datetime.now() - gen_dt).total_seconds() / 60
-                age_label = f"{age_min:.0f} dakika önce" if age_min < 60 else f"{age_min / 60:.1f} saat önce"
-                st.caption(f"🕒 Son güncelleme: {age_label} ({generated_at}) — taranan kapsam: {cache_scope}")
-            except Exception:
-                st.caption(f"🕒 Son güncelleme: {generated_at} — taranan kapsam: {cache_scope}")
-        else:
-            st.caption("🕒 Önbellek zaman bilgisi yok.")
-
-    if not cache_windows_available:
-        st.warning("Önbellekte hiç sonuç yok. Bir sonraki otomatik taramayı bekleyin.")
-        return
-
-    c1, c2 = st.columns(2)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
-        scope = st.selectbox(
-            "Kapsam (önbellek içinden filtrele)", ["BIST 30", "BIST 100", "Tüm BIST"], index=1,
-            help="Önbellek zaten sabit bir kapsamda taranmış durumda — burada sadece o "
-                 "sonuçlar arasından bir alt küme seçiyorsunuz, yeniden tarama yapılmıyor."
-        )
+        scope = st.selectbox("Kapsam", ["BIST 30", "BIST 100", "Tüm BIST"], index=1)
     with c2:
         window_options = st.multiselect(
-            "Şablon Uzunlukları (gün)", cache_windows_available,
-            default=cache_windows_available[:2] if len(cache_windows_available) >= 2 else cache_windows_available,
-            help="Önbellekte taranmış olan pencereler arasından seç."
+            "Şablon Uzunlukları (gün)", [10, 20, 30, 90, 120, 180, 240, 360],
+            default=[90, 120],
+            help="Kısa şablonlar (10-30G) yakın vadeli/ani kırılma sinyalleri, "
+                 "uzun şablonlar (90-360G) daha yavaş gelişen trendleri yakalar. "
+                 "Her uzunluk ayrı taranır ve ayrı sekmede gösterilir. "
+                 "fut_window otomatik olarak şablonun 1.5 katı alınır."
         )
-
-    c3, c4 = st.columns(2)
     with c3:
         min_sim = st.slider("Min Benzerlik", 55, 85, 80, 1,
                              help="Backtesting: PSI 80+ en iyi (%%61 kazanç)")
@@ -546,13 +488,20 @@ def render_scanner(all_data_getter, bist_lists):
         max_conf = st.slider("Maks Güven %", 60, 100, 68, 1,
                               help="Anti-consensus: 65+ güven sinyalleri daha az kazanıyor")
     with c4:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        scan_btn = st.button("🔭 Tara", type="primary", use_container_width=True)
+
+    c5, c6 = st.columns(2)
+    with c5:
         sort_mode = st.radio(
             "Sonuçları Sırala",
             ["🔒 Güvene göre (varsayılan)", "⚡ En Yakın Kırılmaya göre"],
+            horizontal=True,
             help="'En Yakın Kırılmaya göre', geçmiş eşleşmelerin zirveye ortalama "
                  "kaç günde ulaştığına (Beklenen Gün) bakarak en çabuk hareket "
                  "etmesi beklenen hisseleri en üste getirir."
         )
+    with c6:
         max_expected_days = st.slider(
             "Maks Beklenen Gün (yakın kırılma filtresi)", 3, 360, 360, 1,
             help="Sadece bu gün sayısı içinde hareket etmesi beklenen hisseleri göster. "
@@ -563,25 +512,151 @@ def render_scanner(all_data_getter, bist_lists):
         st.warning("En az bir şablon uzunluğu seçmelisiniz.")
         return
 
-    scope_map = {
-        "BIST 30": set(bist_lists['bist30']),
-        "BIST 100": set(bist_lists['bist100']),
-        "Tüm BIST": set(bist_lists['all']),
-    }
-    allowed_tickers = scope_map[scope]
+    st.markdown("""
+    <div style='background:#FFF7ED;border:1px solid #FED7AA;border-radius:8px;
+    padding:10px 14px;margin-bottom:8px;font-size:12px;color:#92400E'>
+    ⚡ Önbellekli tarama: BIST 30 ~30-60sn, BIST 100 ~2-4 dk, Tüm BIST daha uzun sürebilir.
+    Tarama sırasında sayfayı kapatmayın veya başka sekmeye geçmeyin —
+    Streamlit bağlantısı kopabilir.<br>
+    💡 Düzenli/uzun taramalar için <b>🔔 Telegram Bildirimleri</b> sayfasından günlük
+    otomatik taramayı kurabilirsiniz — o zaman tarayıcıyı açık tutmanız gerekmez.<br>
+    Bu araç yatırım tavsiyesi değildir.
+    </div>
+    """, unsafe_allow_html=True)
 
-    raw_results_by_window = cache.get('results_by_window', {})
-    session_results = {}
-    for w in window_options:
-        rs = raw_results_by_window.get(str(w), [])
-        rs = [r for r in rs if r['ticker'] in allowed_tickers
-              and r['avg_sim'] >= min_sim
-              and min_conf <= r['confidence'] <= max_conf]
-        session_results[w] = rs
+    if scan_btn:
+        scope_map = {
+            "BIST 30": bist_lists['bist30'],
+            "BIST 100": bist_lists['bist100'],
+            "Tüm BIST": bist_lists['all']
+        }
+        tickers = scope_map[scope]
 
-    st.session_state['scan_results'] = session_results
-    st.session_state['scan_windows'] = window_options
-    st.session_state['scan_scope'] = scope
+        with st.spinner("Veriler yükleniyor..."):
+            all_data = all_data_getter(tickers, period="2y")
+
+            index_closes = None
+            try:
+                import yfinance as yf
+                xu100_raw = yf.download("XU100.IS", period="2y",
+                                         auto_adjust=True, progress=False, threads=False)
+                if xu100_raw is not None and not xu100_raw.empty:
+                    if isinstance(xu100_raw.columns, pd.MultiIndex):
+                        xu100_raw.columns = xu100_raw.columns.get_level_values(0)
+                    index_closes = xu100_raw['Close'].values.astype(float)
+            except Exception:
+                index_closes = None
+
+        clear_window_cache()
+
+        # ── Tarama başlamadan önce her seçili pencere için bir kez banka kur ──
+        window_banks = {}
+        bank_status = st.empty()
+        for i, w in enumerate(window_options):
+            bank_status.info(
+                f"📦 Karşılaştırma bankası hazırlanıyor: {w}G şablonu "
+                f"({i + 1}/{len(window_options)})..."
+            )
+            window_banks[w] = build_window_bank(all_data, window=w, fut_window=int(w * 1.5))
+        bank_status.empty()
+
+        # ── Chunk boyutu: pencere sayısına göre otomatik küçülür ──────────────
+        chunk_size = max(3, 20 // max(1, len(window_options)))
+
+        st.session_state['scan_job'] = {
+            'tickers': list(all_data.keys()),
+            'all_data': all_data,
+            'index_closes': index_closes,
+            'windows': list(window_options),
+            'window_banks': window_banks,
+            'min_sim': min_sim,
+            'min_conf': min_conf,
+            'max_conf': max_conf,
+            'scope': scope,
+            'cursor': 0,
+            'chunk_size': chunk_size,
+            'results': {w: [] for w in window_options},
+            'start_time': time.time(),
+        }
+        st.session_state.pop('scan_results', None)
+        st.session_state.pop('scan_windows', None)
+        st.rerun()
+
+    job = st.session_state.get('scan_job')
+    if job is not None:
+        total = len(job['tickers'])
+        cursor = job['cursor']
+        chunk_end = min(cursor + job.get('chunk_size', 20), total)
+        chunk_tickers = job['tickers'][cursor:chunk_end]
+
+        prog = st.progress(int(cursor / total * 100) if total else 0,
+                            text=f"Taranıyor: {cursor}/{total} hisse")
+        eta_text = st.empty()
+        elapsed = time.time() - job['start_time']
+        rate = cursor / elapsed if elapsed > 0 and cursor > 0 else 0
+        remaining = (total - cursor) / rate if rate > 0 else 0
+        found_so_far = sum(len(v) for v in job['results'].values())
+        eta_text.caption(
+            f"⏱️ Geçen: {elapsed:.0f}sn | Tahmini kalan: {remaining:.0f}sn | "
+            f"Bulunan: {found_so_far} fırsat | "
+            f"Bu sayfa otomatik ilerleyecek — kapatmayın"
+        )
+
+        timing_log = job.get('timing_log', [])
+        if timing_log:
+            avg_per_call = sum(t[2] for t in timing_log) / len(timing_log)
+            with st.expander(f"🔍 Hız teşhisi (hisse×pencere başına ort. {avg_per_call:.2f}sn)"):
+                slowest = sorted(timing_log, key=lambda t: -t[2])[:5]
+                st.caption("En yavaş 5 hisse/pencere kombinasyonu:")
+                for tkr, w, dur in slowest:
+                    st.text(f"  {tkr} ({w}G): {dur:.2f}sn")
+
+        if st.button("⏹️ Taramayı İptal Et", key="cancel_scan"):
+            st.session_state.pop('scan_job', None)
+            st.warning("Tarama iptal edildi.")
+            st.rerun()
+
+        for ticker in chunk_tickers:
+            df = job['all_data'][ticker]
+            for w in job['windows']:
+                fut_w = int(w * 1.5)
+                _t0 = time.time()
+                r = scan_single_ticker(ticker, df, job['all_data'],
+                                        window=w, fut_window=fut_w,
+                                        min_sim=job['min_sim'], index_closes=job['index_closes'],
+                                        bank=job['window_banks'].get(w))
+                _elapsed_ticker = time.time() - _t0
+                job.setdefault('timing_log', []).append((ticker, w, round(_elapsed_ticker, 3)))
+                if r and job['min_conf'] <= r['confidence'] <= job['max_conf']:
+                    job['results'][w].append(r)
+
+        job['cursor'] = chunk_end
+        st.session_state['scan_job'] = job
+
+        if chunk_end < total:
+            time.sleep(0.1)
+            st.rerun()
+        else:
+            clear_window_cache()
+            key_fn = lambda x: x['confidence'] * 0.5 + x['avg_sim'] * 0.3 + x['weighted_pct'] * 0.2
+            sorted_results = {w: sorted(rs, key=key_fn, reverse=True)
+                               for w, rs in job['results'].items()}
+
+            total_time = time.time() - job['start_time']
+            st.session_state['scan_results'] = sorted_results
+            st.session_state['scan_windows'] = job['windows']
+            st.session_state['scan_scope'] = job['scope']
+            st.session_state['scan_duration'] = total_time
+            st.session_state.pop('scan_job', None)
+
+            st.success(f"✅ Tarama {total_time:.0f} saniyede tamamlandı!")
+            st.rerun()
+
+        return
+
+    scan_duration = st.session_state.get('scan_duration')
+    if scan_duration:
+        st.caption(f"✅ Son tarama {scan_duration:.0f} saniyede tamamlandı.")
 
     results_by_window = st.session_state.get('scan_results', {})
     scan_windows = st.session_state.get('scan_windows', [])
