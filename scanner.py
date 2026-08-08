@@ -513,8 +513,6 @@ def render_scanner(all_data_getter, bist_lists):
     </div>
     """, unsafe_allow_html=True)
 
-    CHUNK_SIZE = 20  # Her rerun'da bu kadar hisse işlenir — bağlantı canlı kalır
-
     if scan_btn:
         scope_map = {
             "BIST 30": bist_lists['bist30'],
@@ -541,11 +539,21 @@ def render_scanner(all_data_getter, bist_lists):
         clear_window_cache()
 
         # ── Tarama başlamadan önce her seçili pencere için bir kez banka kur ──
-        with st.spinner("Karşılaştırma bankaları hazırlanıyor..."):
-            window_banks = {
-                w: build_window_bank(all_data, window=w, fut_window=int(w * 1.5))
-                for w in window_options
-            }
+        # Her pencere için ayrı durum mesajı — "donmuş" görünmesin.
+        window_banks = {}
+        bank_status = st.empty()
+        for i, w in enumerate(window_options):
+            bank_status.info(
+                f"📦 Karşılaştırma bankası hazırlanıyor: {w}G şablonu "
+                f"({i + 1}/{len(window_options)})..."
+            )
+            window_banks[w] = build_window_bank(all_data, window=w, fut_window=int(w * 1.5))
+        bank_status.empty()
+
+        # ── Chunk boyutu: pencere sayısına göre otomatik küçülür ──────────────
+        # Çok pencere seçildiğinde her hisse başına iş arttığı için chunk'ı
+        # küçültüp ilerleme çubuğunun daha sık güncellenmesini sağlıyoruz.
+        chunk_size = max(3, 20 // max(1, len(window_options)))
 
         st.session_state['scan_job'] = {
             'tickers': list(all_data.keys()),
@@ -558,6 +566,7 @@ def render_scanner(all_data_getter, bist_lists):
             'max_conf': max_conf,
             'scope': scope,
             'cursor': 0,
+            'chunk_size': chunk_size,
             'results': {w: [] for w in window_options},
             'start_time': time.time(),
         }
@@ -569,7 +578,7 @@ def render_scanner(all_data_getter, bist_lists):
     if job is not None:
         total = len(job['tickers'])
         cursor = job['cursor']
-        chunk_end = min(cursor + CHUNK_SIZE, total)
+        chunk_end = min(cursor + job.get('chunk_size', 20), total)
         chunk_tickers = job['tickers'][cursor:chunk_end]
 
         prog = st.progress(int(cursor / total * 100) if total else 0,
