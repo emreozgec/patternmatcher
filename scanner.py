@@ -125,20 +125,53 @@ def pearson(a, b):
     return float(np.corrcoef(a, b)[0, 1])
 
 
-def dtw_fast(s1, s2, band=None):
+# ── DTW: numba ile derlenmiş hızlı çekirdek ─────────────────────────────────
+# Aynı algoritma (banded DTW), sadece makine koduna derlenmiş çalışıyor.
+# numba kurulu değilse otomatik olarak saf Python sürümüne düşer (davranış
+# aynı kalır, sadece daha yavaş olur) — uygulama hiçbir durumda bozulmaz.
+try:
+    from numba import njit
+    _NUMBA_AVAILABLE = True
+except Exception:
+    _NUMBA_AVAILABLE = False
+
+
+def _dtw_core(s1, s2, band):
     n = len(s1)
-    if n == 0:
-        return 0.0
-    band = band or max(2, n // 6)
     dtw = np.full((n + 1, n + 1), np.inf)
-    dtw[0, 0] = 0
+    dtw[0, 0] = 0.0
     for i in range(1, n + 1):
         j0 = max(1, i - band)
         j1 = min(n, i + band) + 1
         for j in range(j0, j1):
             cost = abs(s1[i - 1] - s2[j - 1])
-            dtw[i, j] = cost + min(dtw[i - 1, j], dtw[i, j - 1], dtw[i - 1, j - 1])
-    dist = dtw[n, n] / n
+            best_prev = dtw[i - 1, j]
+            if dtw[i, j - 1] < best_prev:
+                best_prev = dtw[i, j - 1]
+            if dtw[i - 1, j - 1] < best_prev:
+                best_prev = dtw[i - 1, j - 1]
+            dtw[i, j] = cost + best_prev
+    return dtw[n, n]
+
+
+if _NUMBA_AVAILABLE:
+    _dtw_core_compiled = njit(fastmath=True)(_dtw_core)
+else:
+    _dtw_core_compiled = None
+
+
+def dtw_fast(s1, s2, band=None):
+    n = len(s1)
+    if n == 0:
+        return 0.0
+    band = band or max(2, n // 6)
+    s1 = np.ascontiguousarray(s1, dtype=np.float64)
+    s2 = np.ascontiguousarray(s2, dtype=np.float64)
+    if _NUMBA_AVAILABLE:
+        total = _dtw_core_compiled(s1, s2, band)
+    else:
+        total = _dtw_core(s1, s2, band)
+    dist = total / n
     return max(0.0, 1.0 - dist * 1.5)
 
 
@@ -514,6 +547,10 @@ def render_scanner(all_data_getter, bist_lists):
     """, unsafe_allow_html=True)
 
     if scan_btn:
+        if _NUMBA_AVAILABLE:
+            with st.spinner("Hesaplama motoru ısınıyor (ilk seferde birkaç saniye sürer)..."):
+                _dtw_core_compiled(np.zeros(5), np.ones(5), 2)  # JIT derlemesini tetikle
+
         scope_map = {
             "BIST 30": bist_lists['bist30'],
             "BIST 100": bist_lists['bist100'],
