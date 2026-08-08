@@ -130,6 +130,72 @@ def render_performance_dashboard():
 
     st.divider()
 
+    # ── YENİ: Güven / Benzerlik Bandına Göre Gerçek Kazanma Oranı ────────────────
+    # backtesting.py'deki sabit "optimal" parametrelerin (PSI 80+, Güven 55-68)
+    # canlı sonuçlarla hâlâ tutarlı olup olmadığını zaman içinde doğrulamak için.
+    if not df_closed.empty:
+        st.markdown("### 🎯 Güven / Benzerlik Bandına Göre Gerçek Sonuç")
+        st.caption(
+            "Backtesting'den gelen sabit eşiklerin (Güven 55-68, PSI 80+) canlı "
+            "sinyallerde hâlâ geçerli olup olmadığını burada takip edebilirsiniz. "
+            "Az sayıda kapanmış sinyalde bantlar güvenilir değildir."
+        )
+
+        def _bucket_confidence(conf):
+            if conf < 50: return "45-50"
+            if conf < 55: return "50-55"
+            if conf < 60: return "55-60"
+            if conf < 65: return "60-65"
+            if conf < 70: return "65-70"
+            return "70+"
+
+        def _bucket_sim(sim):
+            if sim < 60: return "55-60"
+            if sim < 70: return "60-70"
+            if sim < 80: return "70-80"
+            if sim < 90: return "80-90"
+            return "90+"
+
+        def _win_rate_by(df, group_col):
+            rows = []
+            for key, g in df.groupby(group_col):
+                n = len(g)
+                wins = int((g['status'] == 'WIN').sum())
+                win_rate = wins / n * 100 if n else 0.0
+                avg_ret = float(g['pct_change'].mean()) if n else 0.0
+                rows.append({
+                    'Bant': key,
+                    'Kapanan Sinyal': n,
+                    'Kazanma Oranı %': round(win_rate, 1),
+                    'Ort. Getiri %': round(avg_ret, 2),
+                })
+            out = pd.DataFrame(rows)
+            if not out.empty:
+                out = out.sort_values('Bant')
+            return out
+
+        bc1, bc2 = st.columns(2)
+        df_bucketed = df_closed.copy()
+        df_bucketed['conf_bucket'] = df_bucketed['confidence'].apply(_bucket_confidence)
+        df_bucketed['sim_bucket'] = df_bucketed['avg_sim'].apply(_bucket_sim)
+
+        with bc1:
+            st.markdown("**Güven Bandına Göre**")
+            st.dataframe(_win_rate_by(df_bucketed, 'conf_bucket'),
+                         use_container_width=True, hide_index=True)
+        with bc2:
+            st.markdown("**Benzerlik (PSI) Bandına Göre**")
+            st.dataframe(_win_rate_by(df_bucketed, 'sim_bucket'),
+                         use_container_width=True, hide_index=True)
+
+        if len(df_closed) < 20:
+            st.warning(
+                f"Sadece {len(df_closed)} kapanmış sinyal var — en az 20 birikince "
+                "bu bantlar daha anlamlı olacak."
+            )
+
+    st.divider()
+
     # ── Sinyal Detay Tabloları ──────────────────────────────────────────────────
     st.markdown("### 📋 Sinyal Detayları")
     
