@@ -1,0 +1,63 @@
+name: BIST Fırsat Taraması (2 Saatte Bir)
+
+on:
+  schedule:
+    - cron: '0 7-15/2 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Kapsam'
+        required: false
+        default: 'BIST100'
+        type: choice
+        options:
+          - BIST30
+          - BIST100
+          - ALL
+      windows:
+        description: 'Şablon uzunlukları (virgülle ayrılmış, gün)'
+        required: false
+        default: '10,20,30,90,120'
+
+permissions:
+  contents: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repoyu checkout et
+        uses: actions/checkout@v4
+
+      - name: Python kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Bağımlılıkları yükle
+        run: pip install -r requirements.txt
+
+      - name: Taramayı çalıştır ve Telegram'a gönder
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DEDUP_HOURS: '8'
+          SCAN_SCOPE: ${{ github.event.inputs.scope || 'BIST100' }}
+          CACHE_WINDOWS_OVERRIDE: ${{ github.event.inputs.windows || '10,20,30,90,120' }}
+        run: python daily_scan.py
+
+      - name: Gönderim geçmişini ve veritabanını commit'le
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: tarama gecmisi ve veritabani guncellendi [skip ci]"
+            for i in 1 2 3; do
+              git pull --rebase origin main && git push && break
+              echo "Push basarisiz, tekrar deneniyor ($i/3)..."
+              sleep 5
+            done
+          else
+            echo "Gecmis dosyasinda degisiklik yok, commit atlaniyor."
+          fi

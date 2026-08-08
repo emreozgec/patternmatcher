@@ -79,7 +79,7 @@ from scanner import scan_single_ticker
 MIN_SIM        = 80    # PSI 80+ optimal bant (backtesting: %61 kazanç)
 MIN_CONFIDENCE = 55    # Güven 55-65 bandı optimal (backtesting: %66 kazanç)
 MAX_CONFIDENCE = 68    # Anti-consensus filtresi
-SCAN_SCOPE     = "BIST100"   # BIST30 / BIST100 / ALL — GitHub Actions süresi için BIST100 önerilir
+SCAN_SCOPE     = os.environ.get("SCAN_SCOPE", "BIST100")   # BIST30 / BIST100 / ALL
 WINDOWS        = [40, 60, 90]    # Şablon uzunlukları (Telegram sinyalleri için — kullanılmıyor, bkz. 90/120 altta)
 
 # ── Fırsat Tarayıcı önbelleği ────────────────────────────────────────────────
@@ -87,7 +87,20 @@ WINDOWS        = [40, 60, 90]    # Şablon uzunlukları (Telegram sinyalleri iç
 # burada üretilen JSON dosyasını okuyup anında gösteriyor. Ağır hesaplama
 # (DTW/eşleştirme) GitHub Actions'ın kendi CPU'sunda, Streamlit Cloud'un
 # kısıtlı ücretsiz katmanının dışında yapılıyor.
-CACHE_WINDOWS = [10, 20, 30, 90, 120]
+#
+# CACHE_WINDOWS ve SCAN_SCOPE, GitHub Actions'ta "Run workflow" ile elle
+# tetiklerken CACHE_WINDOWS_OVERRIDE / SCAN_SCOPE ortam değişkenleriyle
+# değiştirilebilir (bkz. .github/workflows/daily_scan.yml). Otomatik (cron)
+# çalışmalarda bu değişkenler boş kalır, aşağıdaki hızlı varsayımlar kullanılır.
+_cache_windows_env = os.environ.get("CACHE_WINDOWS_OVERRIDE", "").strip()
+if _cache_windows_env:
+    try:
+        CACHE_WINDOWS = [int(x.strip()) for x in _cache_windows_env.split(",") if x.strip()]
+    except Exception:
+        CACHE_WINDOWS = [10, 20, 30, 90, 120]
+else:
+    CACHE_WINDOWS = [10, 20, 30, 90, 120]
+
 CACHE_MIN_SIM = 55  # Gevşek eşik — Streamlit tarafı kendi Min Benzerlik/Güven filtrelerini üstüne uygular
 RESULTS_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "latest_scan_results.json")
 
@@ -118,6 +131,37 @@ BIST100 = list(set(BIST30 + [
     "KORDS","LOGO","MAVI","MEDTR","NATEN","NETAS","NUHCM","OTKAR","OYAKC",
     "PETUN","PKART","POLHO","PRKAB","SARKY","SASA","SELEC","SELGD","SKBNK",
     "SKTAS","SOKM","TATGD","TCELL","TKFEN","TTRAK","TUPRS","ULUSE","VESBE","YUNSA"]))
+
+ALL_BIST = list(set(BIST100 + [
+    "ACSEL","ADEL","AGYO","AKFEN","AKMGY","ALKIM","ARDYZ","ARSAN","ATAGY",
+    "ATEKS","ATLAS","AVGYO","AYCES","AYEN","BASGZ","BAYRK","BIENY",
+    "BJKAS","BNTAS","BOBET","BORLS","BRKSN","BRKVY","BRMEN","BSOKE","BURCE",
+    "BURVA","BVSAN","CANTE","CARFA","CEMAS","CEMTS","CEOEM","COSMO","CRDFA",
+    "CRFSA","CUSAN","CVKMD","DAGHL","DARDL","DENGE","DGGYO","DITAS","DMSAS",
+    "DNISI","DOBUR","DOCO","DOGUB","DOKTA","DURDO","DYOBY","DZGYO","EDATA",
+    "EGPRO","EGSER","ELITE","EMKEL","EMNIS","EPLAS","ESCOM","ESEN","ETILR",
+    "ETYAT","EUHOL","EUREN","EUYO","FLAP","FONET","FORMT","FORTE","FZLGY",
+    "GARFA","GEDIK","GEDZA","GLBMD","GLRYH","GOKNR","GOLTS","GRTRK","GSDDE",
+    "GSDHO","GSRAY","HDFGS","HEDEF","HKTM","HRKET","HTTBT","HUNER","ICBCT",
+    "IDEAS","IDGYO","IHAAS","IHEVA","IHLAS","IHLGM","IHYAY","IMASM","INTEM",
+    "ISATR","ITTFK","IZFAS","IZINV","IZMDC","KATMR","KAYSE","KCAER","KFEIN",
+    "KGYO","KIMMR","KLGYO","KLRHO","KLSER","KMPUR","KNFRT","KONAK","KOTON",
+    "KRONT","KRPLS","KRSTL","KRTEK","KRVGD","KSTUR","KTLEV","KTSK","KUTPO",
+    "KUYAS","LIDER","LIDFA","LINK","LKMNH","LMKDC","LRSHO","LUKSK","MAALT",
+    "MAGEN","MAKIM","MAKTK","MANAS","MARBL","MARKA","MARTI","MEGMT","MEPET",
+    "MERCN","MERIT","MERKO","METRO","METUR","MIATK","MIPAZ","MMCAS","MNDRS",
+    "MNDTR","MOBTL","MOGAN","MRDIN","MRGYO","MRSHL","MSGYO","MTRKS","MZHLD",
+    "NIBAS","NILYT","NTHOL","NTTUR","NUGYO","OBAMS","OBASE","ODINE","OFSYM",
+    "ONCSM","ORCAY","ORGE","ORMA","OSMEN","OSTIM","OYYAT","OZGYO","OZKGY",
+    "OZRDN","OZSUB","PAGYO","PAMEL","PAPIL","PARSN","PASEU","PCKMT","PCYOT",
+    "PEGYO","PENGD","PENTA","PINSU","PKENT","PLTUR","PNLSN","POLTK","PRDGS",
+    "PRZMA","PSDTC","PTOFS","RTALB","RUBNS","RYGYO","SAMAT","SANFM","SANKO",
+    "SAYAS","SDTTR","SEGYO","SEKFK","SEKUR","SELVA","SEYKM","SILVR","SNKRN",
+    "SODSN","SONME","SRVGY","SUWEN","TBORG","TDGYO","TEKTU","TGSAS","TLMAN",
+    "TMSN","TRCAS","TRGYO","TRILC","TSGYO","TUCLK","TUKAS","TUREX","TURGG",
+    "TURSG","TZNGY","ULUFA","ULUUN","UNLU","USAK","UTPYA","UZERB","VAKFN",
+    "VANGD","VBTYZ","VERUS","VKFYO","VKGYO","VRGYO","WNDMR","YATAS","YAYLA",
+    "YGYO","YIGIT","YKSLN","ZEDUR","ZRGYO"]))
 
 
 def fetch_ticker(symbol, period="2y"):
@@ -379,7 +423,7 @@ from telegram_utils import send_telegram_message, format_results_message
 def run_daily_scan():
     print(f"🚀 Günlük tarama başlıyor — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
-    scope_map = {"BIST30": BIST30, "BIST100": BIST100}
+    scope_map = {"BIST30": BIST30, "BIST100": BIST100, "ALL": ALL_BIST}
     tickers = scope_map.get(SCAN_SCOPE, BIST100)
     print(f"📥 {len(tickers)} hisse ({SCAN_SCOPE}) için veri indiriliyor...")
 
