@@ -462,9 +462,11 @@ def render_scanner(all_data_getter, bist_lists):
         scope = st.selectbox("Kapsam", ["BIST 30", "BIST 100", "Tüm BIST"], index=1)
     with c2:
         window_options = st.multiselect(
-            "Şablon Uzunlukları (gün)", [90, 120, 180, 240, 360],
+            "Şablon Uzunlukları (gün)", [10, 20, 30, 90, 120, 180, 240, 360],
             default=[90, 120],
-            help="Her şablon uzunluğu ayrı taranır ve ayrı sekmede gösterilir. "
+            help="Kısa şablonlar (10-30G) yakın vadeli/ani kırılma sinyalleri, "
+                 "uzun şablonlar (90-360G) daha yavaş gelişen trendleri yakalar. "
+                 "Her uzunluk ayrı taranır ve ayrı sekmede gösterilir. "
                  "fut_window otomatik olarak şablonun 1.5 katı alınır."
         )
     with c3:
@@ -477,6 +479,23 @@ def render_scanner(all_data_getter, bist_lists):
     with c4:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         scan_btn = st.button("🔭 Tara", type="primary", use_container_width=True)
+
+    c5, c6 = st.columns(2)
+    with c5:
+        sort_mode = st.radio(
+            "Sonuçları Sırala",
+            ["🔒 Güvene göre (varsayılan)", "⚡ En Yakın Kırılmaya göre"],
+            horizontal=True,
+            help="'En Yakın Kırılmaya göre', geçmiş eşleşmelerin zirveye ortalama "
+                 "kaç günde ulaştığına (Beklenen Gün) bakarak en çabuk hareket "
+                 "etmesi beklenen hisseleri en üste getirir."
+        )
+    with c6:
+        max_expected_days = st.slider(
+            "Maks Beklenen Gün (yakın kırılma filtresi)", 3, 360, 360, 1,
+            help="Sadece bu gün sayısı içinde hareket etmesi beklenen hisseleri göster. "
+                 "'Hemen çıkacak' hisseler için bunu küçük tutun (örn. 10-20 gün)."
+        )
 
     if not window_options:
         st.warning("En az bir şablon uzunluğu seçmelisiniz.")
@@ -617,13 +636,25 @@ def render_scanner(all_data_getter, bist_lists):
         st.info("Ayarları yapıp 'Tara' butonuna basın.")
         return
 
+    # ── Görüntüleme anında filtre + sıralama uygula (yeniden tarama gerekmez) ──
+    filtered_results_by_window = {}
+    for w in scan_windows:
+        rs = [r for r in results_by_window.get(w, []) if r['expected_days'] <= max_expected_days]
+        if sort_mode.startswith("⚡"):
+            rs = sorted(rs, key=lambda x: x['expected_days'])
+        else:
+            rs = sorted(rs, key=lambda x: x['confidence'] * 0.5 + x['avg_sim'] * 0.3 + x['weighted_pct'] * 0.2,
+                        reverse=True)
+        filtered_results_by_window[w] = rs
+    results_by_window = filtered_results_by_window
+
     scope_label = st.session_state.get('scan_scope', '')
     total_found = sum(len(v) for v in results_by_window.values())
 
     if total_found == 0:
         st.warning(
             f"**{scope_label}** taramasında kriter karşılayan hisse bulunamadı. "
-            "Min Benzerlik ve Min Güven değerlerini düşürün."
+            "Min Benzerlik, Min Güven veya Maks Beklenen Gün değerlerini gevşetin."
         )
         return
 
@@ -763,7 +794,9 @@ def render_scanner(all_data_getter, bist_lists):
                     f'📊 Son {wlabel}': f"{r['tpl_change']:+.1f}%",
                     'RSI': f"{r['tpl_rsi']:.0f}",
                     '🎯 Hedef': f"{r['target']:.2f} ₺",
+                    '⛔ Stop': f"-%{r['stop_pct']:.1f}",
                     '📈 Beklenen': f"+{r['weighted_pct']:.1f}%",
+                    '⚡ Beklenen Gün': f"{r['expected_days']} gün",
                     '🔒 Güven': f"%{r['confidence']:.0f}",
                     '✅ Oy': f"{r['up_count']}/{r['total_matches']}",
                     '🔷 Formasyon': fmt_str,
@@ -892,6 +925,11 @@ def render_scanner(all_data_getter, bist_lists):
                         <div style='font-size:13px;font-weight:600;
                         color:{"#E02424" if r["tpl_rsi"]>70 else "#0E9F6E" if r["tpl_rsi"]<30 else "#555"}'>
                         {r['tpl_rsi']:.0f}</div>
+                        </div>
+                        <div style='text-align:center'>
+                        <div style='font-size:9px;color:#888'>⚡ BEKLENEN GÜN</div>
+                        <div style='font-size:13px;font-weight:600;color:#1A56DB'>
+                        {r['expected_days']} gün</div>
                         </div>
                         </div>
                         {f'''<div style='background:#F9FAFB;border-radius:6px;
