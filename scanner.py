@@ -546,6 +546,23 @@ def render_scanner(all_data_getter, bist_lists):
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Numba durum rozeti — kalıcı, kaçırılamaz ─────────────────────────────
+    if _NUMBA_AVAILABLE:
+        st.markdown(
+            "<div style='display:inline-block;background:#F0FDF4;color:#0E9F6E;"
+            "font-size:12px;font-weight:600;padding:3px 10px;border-radius:12px;"
+            "margin-bottom:8px'>⚙️ Hızlandırma: Aktif (numba)</div>",
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            "<div style='display:inline-block;background:#FEF2F2;color:#E02424;"
+            "font-size:12px;font-weight:600;padding:3px 10px;border-radius:12px;"
+            "margin-bottom:8px'>⚠️ Hızlandırma: Devre Dışı (numba yüklenemedi — "
+            "yavaş moddasınız)</div>",
+            unsafe_allow_html=True
+        )
+
     if scan_btn:
         if _NUMBA_AVAILABLE:
             with st.spinner("Hesaplama motoru ısınıyor (ilk seferde birkaç saniye sürer)..."):
