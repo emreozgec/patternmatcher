@@ -648,6 +648,16 @@ def render_scanner(all_data_getter, bist_lists):
             f"Bu sayfa otomatik ilerleyecek — kapatmayın"
         )
 
+        # ── Teşhis paneli: hisse başına gerçek süre nerede harcanıyor? ──────
+        timing_log = job.get('timing_log', [])
+        if timing_log:
+            avg_per_call = sum(t[2] for t in timing_log) / len(timing_log)
+            with st.expander(f"🔍 Hız teşhisi (hisse×pencere başına ort. {avg_per_call:.2f}sn)"):
+                slowest = sorted(timing_log, key=lambda t: -t[2])[:5]
+                st.caption("En yavaş 5 hisse/pencere kombinasyonu:")
+                for tkr, w, dur in slowest:
+                    st.text(f"  {tkr} ({w}G): {dur:.2f}sn")
+
         if st.button("⏹️ Taramayı İptal Et", key="cancel_scan"):
             st.session_state.pop('scan_job', None)
             st.warning("Tarama iptal edildi.")
@@ -657,10 +667,13 @@ def render_scanner(all_data_getter, bist_lists):
             df = job['all_data'][ticker]
             for w in job['windows']:
                 fut_w = int(w * 1.5)
+                _t0 = time.time()
                 r = scan_single_ticker(ticker, df, job['all_data'],
                                         window=w, fut_window=fut_w,
                                         min_sim=job['min_sim'], index_closes=job['index_closes'],
                                         bank=job['window_banks'].get(w))
+                _elapsed_ticker = time.time() - _t0
+                job.setdefault('timing_log', []).append((ticker, w, round(_elapsed_ticker, 3)))
                 if r and job['min_conf'] <= r['confidence'] <= job['max_conf']:
                     job['results'][w].append(r)
 
