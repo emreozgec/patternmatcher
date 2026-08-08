@@ -244,11 +244,18 @@ def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates
     fut_min = (future_closes.min() - future_closes[0]) / (future_closes[0] + 1e-9) * 100
 
     match_date_label = None
+    match_date_start = None
+    match_date_end = None
     if candidate_dates is not None and best_i < len(candidate_dates):
         try:
             match_date_label = candidate_dates[best_i].strftime('%m.%Y')
+            match_date_start = candidate_dates[best_i].strftime('%d.%m.%Y')
+            end_idx = min(best_i + window - 1, len(candidate_dates) - 1)
+            match_date_end = candidate_dates[end_idx].strftime('%d.%m.%Y')
         except Exception:
             match_date_label = None
+            match_date_start = None
+            match_date_end = None
 
     return {
         'sim': round(best_sim, 1),
@@ -259,6 +266,8 @@ def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates
         'future_closes': future_closes,
         'match_start_idx': best_i,
         'match_date_label': match_date_label,
+        'match_date_start': match_date_start,
+        'match_date_end': match_date_end,
     }
 
 
@@ -731,10 +740,15 @@ def render_scanner(all_data_getter, bist_lists):
             for r in results:
                 fmt_str = ' / '.join(r['formations'][:2]) if r['formations'] else '—'
                 top_m = r['top_matches'][0] if r.get('top_matches') else None
-                top_m_str = f"{top_m['source']} (%{top_m['sim']:.0f})" if top_m else "—"
+                if top_m:
+                    _period = (f" [{top_m['match_date_start']}–{top_m['match_date_end']}]"
+                               if top_m.get('match_date_start') else "")
+                    top_m_str = f"{top_m['source']}{_period} (%{top_m['sim']:.0f})"
+                else:
+                    top_m_str = "—"
                 rows.append({
                     '🏢 Hisse': r['ticker'],
-                    '🔗 En Benzediği': top_m_str,
+                    '🔗 En Benzediği (dönem)': top_m_str,
                     '💰 Fiyat': f"{r['current_price']:.2f} ₺",
                     f'📊 Son {wlabel}': f"{r['tpl_change']:+.1f}%",
                     'RSI': f"{r['tpl_rsi']:.0f}",
@@ -772,7 +786,10 @@ def render_scanner(all_data_getter, bist_lists):
                         other_match_lines = ""
                         for m in other_matches:
                             m_color = '#0E9F6E' if m['fut_pct'] > 0 else '#E02424'
-                            date_label = m.get('match_date_label', '')
+                            if m.get('match_date_start'):
+                                date_label = f"{m['match_date_start']}–{m['match_date_end']}"
+                            else:
+                                date_label = m.get('match_date_label', '')
                             other_match_lines += (
                                 f"<div style='display:flex;justify-content:space-between;"
                                 f"font-size:10px;padding:2px 0'>"
@@ -806,25 +823,29 @@ def render_scanner(all_data_getter, bist_lists):
                         if top_match:
                             tm_color = '#0E9F6E' if top_match['fut_pct'] > 0 else '#E02424'
                             tm_icon = '📈' if top_match['fut_pct'] > 0 else '📉'
-                            tm_date = top_match.get('match_date_label', '')
+                            if top_match.get('match_date_start'):
+                                tm_date = f"{top_match['match_date_start']} – {top_match['match_date_end']}"
+                            else:
+                                tm_date = top_match.get('match_date_label', '')
                             top_match_html = f"""
                             <div style='background:linear-gradient(135deg,#F0F7FF,#FFFFFF);
                             border:1px solid #BFDBFE;border-radius:8px;
                             padding:8px 10px;margin:8px 0'>
                             <div style='font-size:9px;color:#1A56DB;letter-spacing:0.5px;
-                            margin-bottom:3px'>🔗 EN ÇOK BENZEDİĞİ HİSSE</div>
+                            margin-bottom:3px'>🔗 EN ÇOK BENZEDİĞİ HİSSE — DÖNEM</div>
                             <div style='display:flex;justify-content:space-between;align-items:center'>
                             <div style='font-size:16px;font-weight:800;color:#1A1A2E'>
                             {top_match['source']}
-                            {f"<span style='font-size:10px;color:#888;font-weight:400'> · {tm_date}</span>" if tm_date else ""}
                             </div>
                             <div style='font-size:14px;font-weight:700;color:#1A56DB'>
                             %{top_match['sim']:.0f}
                             </div>
                             </div>
+                            {f"<div style='font-size:11px;color:#1A56DB;font-weight:600;margin-top:2px'>📅 {tm_date}</div>" if tm_date else ""}
                             <div style='font-size:11px;color:#555;margin-top:2px'>
                             O dönemden sonra: <b style='color:{tm_color}'>
-                            {tm_icon} {top_match['fut_pct']:+.1f}%</b> hareket etti
+                            {tm_icon} {top_match['fut_pct']:+.1f}%</b> hareket etti — bu tarihleri
+                            grafikte kontrol edebilirsiniz
                             </div>
                             </div>
                             """

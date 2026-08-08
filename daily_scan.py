@@ -269,6 +269,8 @@ def _clean_result_for_json(r):
             'sim': m.get('sim'),
             'fut_pct': m.get('fut_pct'),
             'match_date_label': m.get('match_date_label'),
+            'match_date_start': m.get('match_date_start'),
+            'match_date_end': m.get('match_date_end'),
         }
         for m in r.get('top_matches', [])
     ]
