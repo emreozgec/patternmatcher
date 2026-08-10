@@ -1535,6 +1535,99 @@ def main():
         st.info("Bir hisse seçin ve 'Yükle' butonuna basın.")
         return
 
+    # ── YENİ: Fırsat Tarayıcı Yöntemiyle Kontrol ─────────────────────────────
+    # Aynı DTW+Pearson motorunu, aynı backtest-kalibreli eşiklerle (PSI 80+,
+    # Güven 55-68), sadece BU hisse için çalıştırır — sonuç Fırsat Tarayıcı
+    # sayfasındakiyle BİREBİR tutarlıdır (aynı fonksiyon çağrılıyor).
+    with st.expander(f"🔭 {sym} için Fırsat Tarayıcı Yöntemiyle Kontrol Et"):
+        st.caption(
+            "Bu, Pattern Matcher'ın kendi bileşik skoru değil — Fırsat Tarayıcı "
+            "sayfasındaki AYNI fonksiyonu (`scan_single_ticker`) bu tek hisse için "
+            "çalıştırır. Sonuç, Fırsat Tarayıcı'da bu hisseyi görseydiniz alacağınız "
+            "sonuçla birebir aynı olur."
+        )
+        ft_c1, ft_c2 = st.columns(2)
+        with ft_c1:
+            ft_windows = st.multiselect(
+                "Şablon Uzunlukları (gün)", [10, 20, 30, 90, 120, 180, 240, 360],
+                default=[90, 120], key="ft_check_windows"
+            )
+        with ft_c2:
+            ft_scope = st.selectbox("Karşılaştırma Kapsamı", ["BIST 30", "BIST 100", "Tüm BIST"],
+                                     index=1, key="ft_check_scope")
+
+        if st.button("🔭 Bu Yöntemle Tara", key="ft_check_btn"):
+            if not ft_windows:
+                st.warning("En az bir şablon uzunluğu seçmelisiniz.")
+            else:
+                from scanner import scan_single_ticker, build_window_bank, clear_window_cache
+
+                ft_scope_map = {"BIST 30": BIST30, "BIST 100": BIST100, "Tüm BIST": ALL_BIST}
+                candidate_tickers = ft_scope_map[ft_scope]
+
+                with st.spinner("Karşılaştırma verisi indiriliyor..."):
+                    ft_all_data = fetch_batch(candidate_tickers, period="2y")
+                    ft_all_data[sym] = df  # kendi hissemizin de geçmişi lazım (kendi-tarihi kontrolü için)
+
+                    ft_index_closes = None
+                    try:
+                        xu100_raw = yf.download("XU100.IS", period="2y", auto_adjust=True,
+                                                 progress=False, threads=False, session=session)
+                        if xu100_raw is not None and not xu100_raw.empty:
+                            if isinstance(xu100_raw.columns, pd.MultiIndex):
+                                xu100_raw.columns = xu100_raw.columns.get_level_values(0)
+                            ft_index_closes = xu100_raw['Close'].values.astype(float)
+                    except Exception:
+                        ft_index_closes = None
+
+                clear_window_cache()
+                ft_results = []
+                prog = st.progress(0, text="Taranıyor...")
+                for i, w in enumerate(ft_windows):
+                    prog.progress((i + 1) / len(ft_windows), text=f"{w}G taranıyor...")
+                    bank = build_window_bank(ft_all_data, window=w, fut_window=int(w * 1.5))
+                    r = scan_single_ticker(sym, df, ft_all_data, window=w, fut_window=int(w * 1.5),
+                                            min_sim=80, index_closes=ft_index_closes, bank=bank)
+                    if r:
+                        ft_results.append(r)
+                clear_window_cache()
+                prog.empty()
+
+                if not ft_results:
+                    st.warning(
+                        f"{sym} için hiçbir pencerede Fırsat Tarayıcı kriterlerini "
+                        "(PSI 80+, Güven 55-68) karşılayan bir sinyal bulunamadı."
+                    )
+                else:
+                    for r in ft_results:
+                        conf_color = '#0E9F6E' if r['confidence'] >= 65 else (
+                            '#E3A008' if r['confidence'] >= 50 else '#E02424')
+                        st.markdown(f"""
+                        <div style='background:#FFFFFF;border:1.5px solid #E5E9F0;
+                        border-radius:10px;padding:12px 14px;margin:8px 0'>
+                        <div style='display:flex;justify-content:space-between'>
+                        <b style='font-size:15px'>{r['window']}G Şablon</b>
+                        <b style='color:{conf_color}'>Güven: %{r['confidence']:.0f}</b>
+                        </div>
+                        <div style='font-size:13px;color:#555;margin-top:4px'>
+                        Hedef: <b>{r['target']:.2f} ₺</b> (+{r['weighted_pct']:.1f}%) |
+                        Stop: -%{r['stop_pct']:.1f} | Beklenen: {r['expected_days']} gün |
+                        Benzerlik: %{r['avg_sim']:.0f} | Oy: {r['up_count']}/{r['total_matches']}
+                        </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        for m in r.get('top_matches', [])[:3]:
+                            date_range = (f"{m['match_date_start']}–{m['match_date_end']}"
+                                          if m.get('match_date_start') else m.get('match_date_label', ''))
+                            m_color = '#0E9F6E' if m['fut_pct'] > 0 else '#E02424'
+                            st.markdown(
+                                f"<div style='font-size:12px;color:#555;padding-left:8px'>"
+                                f"↳ {m['source']} ({date_range}) — %{m['sim']:.0f} benzerlik, "
+                                f"sonrasında <span style='color:{m_color};font-weight:600'>"
+                                f"{m['fut_pct']:+.1f}%</span></div>",
+                                unsafe_allow_html=True
+                            )
+
     st.divider()
 
     # ── ADIM 2 ──
