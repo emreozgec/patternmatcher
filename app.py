@@ -1482,8 +1482,20 @@ def main():
         st.session_state['library_action'] = None
         st.info(f"📚 **{t['name']}** kütüphaneden yüklendi. Tarihler otomatik ayarlandı.")
 
-    st.markdown("## 📊 BIST Pattern Matcher")
-    st.caption("Çok boyutlu hisse senedi şablon eşleştirme — fiyat + hacim + momentum + formasyon")
+  st.markdown("## 📊 BIST Pattern Matcher")
+    st.caption(
+        "Seçtiğiniz **herhangi bir tarih aralığını** şablon alır ve şekil benzerliğine "
+        "ek olarak hissenin genel **karakterini** (volatilite, beta, trend eğimi, "
+        "yükseliş/düşüş oranı) ve piyasa rejimini de karışıma katan **bileşik** bir "
+        "skor üretir — kalite uyarıları (şablon çok uzun / endeksle çok korele) da "
+        "burada gösterilir."
+    )
+    st.caption(
+        "ℹ️ Sadece **son dönem grafik şeklinin** nerede daha önce görüldüğünü hızlıca "
+        "bulmak istiyorsanız (örn. alım öncesi görsel doğrulama), menüdeki "
+        "**🔭 Fırsat Tarayıcı** daha basit ve doğrudan bir araçtır — iki sayfa farklı "
+        "yöntemler kullandığı için aynı hisse için farklı sonuç verebilirler, bu normaldir."
+    )
     st.divider()
 
     # ── ADIM 1 ──
