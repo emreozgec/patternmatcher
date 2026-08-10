@@ -31,6 +31,21 @@ def zscore(arr):
     return (arr - mu) / sigma
 
 
+def downsample_factor(window):
+    """
+    Uzun şablonlarda DTW maliyeti pencere uzunluğuyla KARESEL artıyor
+    (band da pencereyle birlikte büyüdüğü için). Bunu sınırlamak için,
+    uzun pencerelerde günlük yerine seyreltilmiş (örn. haftalık) örnekleme
+    kullanıyoruz — şekil bilgisi büyük ölçüde korunuyor, etkin nokta sayısı
+    ~70-90 civarında sabit kalıyor (pencere ne kadar uzarsa uzasın).
+    Hedef/stop/beklenen gün gibi finansal hesaplamalar HER ZAMAN tam günlük
+    veriyle yapılıyor — sadece "hangi dönem benziyor" araması seyreltiliyor.
+    """
+    if window <= 60:
+        return 1
+    return max(1, window // 75)
+
+
 _WINDOW_CACHE = {}
 
 
@@ -50,11 +65,13 @@ def _get_cached_windows(ticker_key, closes, window, fut_window):
         _WINDOW_CACHE[cache_key] = None
         return None
 
+    ds = downsample_factor(window)
     step = max(1, window // 5)
     starts = list(range(0, max_start, step))
-    windows_z = np.array([zscore(closes[i:i + window]) for i in starts])
+    windows_z = np.array([zscore(closes[i:i + window][::ds]) for i in starts])
 
-    result = {'starts': starts, 'windows_z': windows_z, 'step': step, 'max_start': max_start}
+    result = {'starts': starts, 'windows_z': windows_z, 'step': step,
+              'max_start': max_start, 'ds': ds}
     _WINDOW_CACHE[cache_key] = result
     return result
 
@@ -146,9 +163,13 @@ def dtw_fast(s1, s2, band=None):
     return max(0.0, 1.0 - dist * 1.5)
 
 
-def similarity_score(tpl_z, win_prices):
-    """Hızlı benzerlik: Pearson + DTW kombinasyonu"""
-    win_z = zscore(win_prices)
+def similarity_score(tpl_z, win_prices, ds=1):
+    """
+    Hızlı benzerlik: Pearson + DTW kombinasyonu.
+    ds>1 ise win_prices, tpl_z ile aynı seyreltme oranında örneklenir —
+    tpl_z zaten downsample_factor(window) ile seyreltilmiş kabul edilir.
+    """
+    win_z = zscore(win_prices[::ds] if ds > 1 else win_prices)
     p = (pearson(tpl_z, win_z) + 1) / 2
     if p < 0.45:
         return p * 100
@@ -194,12 +215,14 @@ def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates
     if max_start < 5:
         return None
 
+    ds = downsample_factor(window)
+
     cache = _get_cached_windows(candidate_key, candidate_closes, window, fut_window) \
         if candidate_key is not None else None
 
     if cache is not None and len(cache['starts']) > 0:
         starts = cache['starts']
-        windows_z = cache['windows_z']  # (n_windows, window)
+        windows_z = cache['windows_z']  # (n_windows, ~window/ds) — seyreltilmiş
         step = max(1, int(cache['step'] * refine_frac))
 
         t = tpl_z - tpl_z.mean()
@@ -214,23 +237,23 @@ def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates
         best_sim, best_i = -1, starts[0]
         for idx in top_idx:
             i = starts[idx]
-            sim = similarity_score(tpl_z, candidate_closes[i:i + window])
+            sim = similarity_score(tpl_z, candidate_closes[i:i + window], ds=ds)
             if sim > best_sim:
                 best_sim, best_i = sim, i
 
         for i in range(max(0, best_i - step), min(max_start + 1, best_i + step + 1)):
-            sim = similarity_score(tpl_z, candidate_closes[i:i + window])
+            sim = similarity_score(tpl_z, candidate_closes[i:i + window], ds=ds)
             if sim > best_sim:
                 best_sim, best_i = sim, i
     else:
         step = max(1, window // 5)
         best_sim, best_i = -1, 0
         for i in range(0, max_start, step):
-            sim = similarity_score(tpl_z, candidate_closes[i:i + window])
+            sim = similarity_score(tpl_z, candidate_closes[i:i + window], ds=ds)
             if sim > best_sim:
                 best_sim, best_i = sim, i
         for i in range(max(0, best_i - step), min(max_start + 1, best_i + step + 1)):
-            sim = similarity_score(tpl_z, candidate_closes[i:i + window])
+            sim = similarity_score(tpl_z, candidate_closes[i:i + window], ds=ds)
             if sim > best_sim:
                 best_sim, best_i = sim, i
 
@@ -292,7 +315,7 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
         return None
 
     tpl_prices = closes[-window:]
-    tpl_z = zscore(tpl_prices)
+    tpl_z = zscore(tpl_prices[::downsample_factor(window)])
     tpl_rets = daily_returns(tpl_prices)
 
     tpl_change = (tpl_prices[-1] - tpl_prices[0]) / (tpl_prices[0] + 1e-9) * 100
