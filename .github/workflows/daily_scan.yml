@@ -1,9 +1,23 @@
-name: BIST Fırsat Taraması (2 Saatte Bir)
+name: BIST Fırsat Taraması (Günlük 18:15)
 
 on:
   schedule:
-    - cron: '0 7-15/2 * * 1-5'
-  workflow_dispatch: {}
+    - cron: '15 15 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Kapsam'
+        required: false
+        default: 'ALL'
+        type: choice
+        options:
+          - BIST30
+          - BIST100
+          - ALL
+      windows:
+        description: 'Şablon uzunlukları (virgülle ayrılmış, gün)'
+        required: false
+        default: '180'
 
 permissions:
   contents: write
@@ -28,15 +42,17 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DEDUP_HOURS: '8'
+          SCAN_SCOPE: ${{ github.event.inputs.scope || 'ALL' }}
+          CACHE_WINDOWS_OVERRIDE: ${{ github.event.inputs.windows || '180' }}
         run: python daily_scan.py
 
-      - name: Gönderim geçmişini commit'le
+      - name: Gönderim geçmişini ve veritabanını commit'le
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/
           if ! git diff --cached --quiet; then
-            git commit -m "chore: tekrar-bildirim gecmisini guncelle [skip ci]"
+            git commit -m "chore: tarama gecmisi ve veritabani guncellendi [skip ci]"
             for i in 1 2 3; do
               git pull --rebase origin main && git push && break
               echo "Push basarisiz, tekrar deneniyor ($i/3)..."
