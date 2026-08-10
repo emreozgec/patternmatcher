@@ -574,6 +574,29 @@ def render_scanner(all_data_getter, bist_lists):
             except Exception:
                 index_closes = None
 
+        # ── Veri çekme teşhisi — sessiz başarısızlığı görünür yap ────────────
+        n_requested = len(tickers)
+        n_received = len(all_data)
+        if n_received == 0:
+            st.error(
+                f"❌ {n_requested} hisse istendi ama HİÇBİRİNİN verisi alınamadı. "
+                "Bu bir 'sonuç bulunamadı' değil, veri çekme hatası — muhtemelen "
+                "yfinance/Yahoo Finance'a çok fazla hisseyi tek seferde sorduğumuz "
+                "için istek reddedildi veya zaman aşımına uğradı. Daha küçük bir "
+                "kapsamla (BIST 30/100) tekrar deneyin, veya birkaç dakika sonra "
+                "tekrar deneyin."
+            )
+            return
+        elif n_received < n_requested * 0.5:
+            st.warning(
+                f"⚠️ {n_requested} hisse istendi, sadece {n_received} tanesinin "
+                f"verisi alınabildi (%{n_received/n_requested*100:.0f}). Sonuçlar "
+                "eksik olabilir — bazı hisseler az işlem görüyor olabilir ya da "
+                "veri sağlayıcıda geçici bir sorun var."
+            )
+        else:
+            st.caption(f"✅ {n_received}/{n_requested} hisse verisi alındı.")
+
         clear_window_cache()
 
         # ── Tarama başlamadan önce her seçili pencere için bir kez banka kur ──
