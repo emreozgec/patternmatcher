@@ -1,14 +1,14 @@
-name: BIST Fırsat Taraması (2 Saatte Bir)
+name: BIST Fırsat Taraması (Günlük 18:15)
 
 on:
   schedule:
-    - cron: '0 7-15/2 * * 1-5'
+    - cron: '15 15 * * 1-5'
   workflow_dispatch:
     inputs:
       scope:
         description: 'Kapsam'
         required: false
-        default: 'BIST100'
+        default: 'ALL'
         type: choice
         options:
           - BIST30
@@ -17,7 +17,7 @@ on:
       windows:
         description: 'Şablon uzunlukları (virgülle ayrılmış, gün)'
         required: false
-        default: '10,20,30,90,120'
+        default: '180'
 
 permissions:
   contents: write
@@ -42,8 +42,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DEDUP_HOURS: '8'
-          SCAN_SCOPE: ${{ github.event.inputs.scope || 'BIST100' }}
-          CACHE_WINDOWS_OVERRIDE: ${{ github.event.inputs.windows || '10,20,30,90,120' }}
+          SCAN_SCOPE: ${{ github.event.inputs.scope || 'ALL' }}
+          CACHE_WINDOWS_OVERRIDE: ${{ github.event.inputs.windows || '180' }}
         run: python daily_scan.py
 
       - name: Gönderim geçmişini ve veritabanını commit'le

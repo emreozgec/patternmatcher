@@ -420,6 +420,29 @@ from telegram_utils import send_telegram_message, format_results_message
 # ANA AKIŞ
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _required_fetch_period(window_options):
+    """
+    scanner.py'deki aynı mantık: en uzun şablon + tahmin penceresinin sığması
+    için gereken minimum veri derinliğini hesaplar. '2y' sabit kullanmak,
+    180G+ gibi uzun pencerelerde hiçbir hissede yeterli geçmiş kalmamasına ve
+    taramanın sessizce boş sonuç vermesine yol açıyordu — bkz. scanner.py.
+    """
+    if not window_options:
+        return "2y"
+    max_window = max(window_options)
+    required_trading_days = max_window + int(max_window * 1.5) + 40
+    required_calendar_days = required_trading_days / 0.65
+    required_years = required_calendar_days / 365
+    if required_years <= 1.8:
+        return "2y"
+    elif required_years <= 4.5:
+        return "5y"
+    elif required_years <= 9:
+        return "10y"
+    else:
+        return "max"
+
+
 def run_daily_scan():
     print(f"🚀 Günlük tarama başlıyor — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
@@ -427,10 +450,16 @@ def run_daily_scan():
     tickers = scope_map.get(SCAN_SCOPE, BIST100)
     print(f"📥 {len(tickers)} hisse ({SCAN_SCOPE}) için veri indiriliyor...")
 
-    all_data = fetch_batch(tickers, period="2y")
+    # Hem Telegram sinyal pencereleri (90/120) hem de önbellek pencereleri
+    # (CACHE_WINDOWS) için yeterli veri derinliği sağlanacak şekilde tek
+    # seferde uygun uzunlukta veri çek.
+    fetch_period = _required_fetch_period(CACHE_WINDOWS + [90, 120])
+    print(f"📏 Gerekli veri derinliği için period='{fetch_period}' kullanılıyor.")
+
+    all_data = fetch_batch(tickers, period=fetch_period)
     print(f"✅ {len(all_data)} hisse verisi alındı.")
 
-    index_closes = fetch_index_closes(period="2y")
+    index_closes = fetch_index_closes(period=fetch_period)
     print(f"📊 Endeks verisi: {'alındı' if index_closes is not None else 'alınamadı'}")
 
     # SQLite Veritabanı ve Açık Pozisyon Güncellemesi
