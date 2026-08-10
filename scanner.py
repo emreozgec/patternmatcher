@@ -179,12 +179,15 @@ def calc_rsi(prices, n=14):
 
 
 def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates=None,
-                     candidate_key=None):
+                     candidate_key=None, top_k=3, refine_frac=1.0):
     """
     Aday hissenin geçmişinde şablona en benzer bölgeyi bul.
     Sadece ardında yeterli gelecek verisi olan bölgeleri tara.
     Performans: candidate_key verilirse, önbellekten hazır z-score matrisini
     kullanır (vektörize Pearson ön-eleme) — DTW sadece en güçlü adaylarda çalışır.
+    top_k: pearson ön-elemesinden sonra DTW ile detaylı bakılacak aday sayısı.
+    refine_frac: ince ayar (refinement) penceresinin genişlik katsayısı — 1.0
+    tam, 0.5 yarı yarıya daha az DTW çağrısı demek (hız/hassasiyet dengesi).
     """
     n = len(candidate_closes)
     max_start = n - window - fut_window
@@ -197,7 +200,7 @@ def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates
     if cache is not None and len(cache['starts']) > 0:
         starts = cache['starts']
         windows_z = cache['windows_z']  # (n_windows, window)
-        step = cache['step']
+        step = max(1, int(cache['step'] * refine_frac))
 
         t = tpl_z - tpl_z.mean()
         w = windows_z - windows_z.mean(axis=1, keepdims=True)
@@ -205,7 +208,7 @@ def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates
         w_norms = np.sqrt((w ** 2).sum(axis=1)) + 1e-9
         pearson_scores = (w @ t) / (w_norms * t_norm)  # -1..1, shape (n_windows,)
 
-        top_k = min(3, len(starts))
+        top_k = min(top_k, len(starts))
         top_idx = np.argpartition(-pearson_scores, top_k - 1)[:top_k]
 
         best_sim, best_i = -1, starts[0]
@@ -272,7 +275,8 @@ def find_best_match(tpl_z, candidate_closes, window, fut_window, candidate_dates
 
 
 def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
-                        index_closes=None, bank=None):
+                        index_closes=None, bank=None, candidate_top_k=25,
+                        dtw_top_k=3, refine_frac=1.0):
     """
     Tek hisse için fırsat analizi:
     - Son `window` günü şablon al
@@ -308,8 +312,8 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
     matches = []
 
     if bank is not None:
-        # ── YENİ: Toplu vektörize ön-eleme ile aday seç, sadece top adaylarda DTW çalıştır
-        candidates = batch_prefilter(tpl_z, bank, exclude_ticker=ticker, top_k=25)
+        # ── Toplu vektörize ön-eleme ile aday seç, sadece top adaylarda DTW çalıştır
+        candidates = batch_prefilter(tpl_z, bank, exclude_ticker=ticker, top_k=candidate_top_k)
         seen_tickers = set()
         for other_ticker, start_idx, pscore in candidates:
             if other_ticker in seen_tickers:
@@ -318,7 +322,8 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
             other_closes = all_data[other_ticker]['Close'].values.astype(float)
             other_dates = all_data[other_ticker].index
             result = find_best_match(tpl_z, other_closes, window, fut_window, other_dates,
-                                      candidate_key=other_ticker)
+                                      candidate_key=other_ticker, top_k=dtw_top_k,
+                                      refine_frac=refine_frac)
             if result and result['sim'] >= min_sim:
                 result['source'] = other_ticker
                 matches.append(result)
@@ -340,7 +345,8 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
         hist_closes = closes[:-window]
         hist_dates = dates[:-window]
         result = find_best_match(tpl_z, hist_closes, window, fut_window, hist_dates,
-                                  candidate_key=f"{ticker}_self")
+                                  candidate_key=f"{ticker}_self", top_k=dtw_top_k,
+                                  refine_frac=refine_frac)
         if result and result['sim'] >= min_sim:
             result['source'] = f"{ticker} (geçmiş)"
             matches.append(result)
@@ -463,8 +469,16 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
 def render_scanner(all_data_getter, bist_lists):
     st.markdown("## 🔭 BIST Fırsat Tarayıcı")
     st.caption(
-        "Her hissenin son hareketini şablon alır, diğer hisselerin geçmişinde "
-        "benzer dönemleri bulur ve konsensüs yükseliş olan hisseleri listeler."
+        "Her hissenin **son dönem fiyat grafiğinin şeklini** (DTW + Pearson korelasyonu) "
+        "diğer hisselerin geçmişiyle karşılaştırır — 'bu grafik daha önce nerede görüldü, "
+        "sonrasında ne oldu' sorusuna cevap arar. Sonuçta gösterilen tarih aralığını "
+        "grafikte açıp gözle doğrulayabilirsiniz."
+    )
+    st.caption(
+        "ℹ️ Bu, sayfa menüsündeki **Pattern Matcher**'dan farklı bir araç: Pattern "
+        "Matcher şekil benzerliğine ek olarak hissenin genel karakterini (volatilite, "
+        "beta, trend) de karışıma katar — o yüzden iki sayfa aynı hisse için farklı "
+        "sonuç verebilir, bu normaldir."
     )
     st.divider()
 
@@ -501,12 +515,25 @@ def render_scanner(all_data_getter, bist_lists):
                  "kaç günde ulaştığına (Beklenen Gün) bakarak en çabuk hareket "
                  "etmesi beklenen hisseleri en üste getirir."
         )
+        speed_mode = st.radio(
+            "Hız Modu",
+            ["⚖️ Dengeli", "🚀 Hızlı (daha az aday karşılaştırılır)"],
+            horizontal=True,
+            help="Hızlı mod, hisse başına karşılaştırılan aday sayısını ve DTW "
+                 "ince-ayar taramasını azaltır — süre yaklaşık yarıya iner, "
+                 "sonuçların hassasiyetinde küçük bir düşüş olabilir."
+        )
     with c6:
         max_expected_days = st.slider(
             "Maks Beklenen Gün (yakın kırılma filtresi)", 3, 360, 360, 1,
             help="Sadece bu gün sayısı içinde hareket etmesi beklenen hisseleri göster. "
                  "'Hemen çıkacak' hisseler için bunu küçük tutun (örn. 10-20 gün)."
         )
+
+    if speed_mode.startswith("🚀"):
+        candidate_top_k, dtw_top_k, refine_frac = 12, 2, 0.5
+    else:
+        candidate_top_k, dtw_top_k, refine_frac = 25, 3, 1.0
 
     if not window_options:
         st.warning("En az bir şablon uzunluğu seçmelisiniz.")
@@ -575,6 +602,9 @@ def render_scanner(all_data_getter, bist_lists):
             'scope': scope,
             'cursor': 0,
             'chunk_size': chunk_size,
+            'candidate_top_k': candidate_top_k,
+            'dtw_top_k': dtw_top_k,
+            'refine_frac': refine_frac,
             'results': {w: [] for w in window_options},
             'start_time': time.time(),
         }
@@ -624,7 +654,10 @@ def render_scanner(all_data_getter, bist_lists):
                 r = scan_single_ticker(ticker, df, job['all_data'],
                                         window=w, fut_window=fut_w,
                                         min_sim=job['min_sim'], index_closes=job['index_closes'],
-                                        bank=job['window_banks'].get(w))
+                                        bank=job['window_banks'].get(w),
+                                        candidate_top_k=job.get('candidate_top_k', 25),
+                                        dtw_top_k=job.get('dtw_top_k', 3),
+                                        refine_frac=job.get('refine_frac', 1.0))
                 _elapsed_ticker = time.time() - _t0
                 job.setdefault('timing_log', []).append((ticker, w, round(_elapsed_ticker, 3)))
                 if r and job['min_conf'] <= r['confidence'] <= job['max_conf']:
