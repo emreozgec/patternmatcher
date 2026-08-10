@@ -683,6 +683,11 @@ def render_scanner(all_data_getter, bist_lists):
             df = job['all_data'][ticker]
             for w in job['windows']:
                 fut_w = int(w * 1.5)
+                job.setdefault('eligible_counts', {w2: [0, 0] for w2 in job['windows']})
+                job['eligible_counts'].setdefault(w, [0, 0])
+                job['eligible_counts'][w][1] += 1  # toplam denenen
+                if len(df) >= w + 10:
+                    job['eligible_counts'][w][0] += 1  # yeterli veriye sahip
                 _t0 = time.time()
                 r = scan_single_ticker(ticker, df, job['all_data'],
                                         window=w, fut_window=fut_w,
@@ -713,6 +718,7 @@ def render_scanner(all_data_getter, bist_lists):
             st.session_state['scan_windows'] = job['windows']
             st.session_state['scan_scope'] = job['scope']
             st.session_state['scan_duration'] = total_time
+            st.session_state['eligible_counts'] = job.get('eligible_counts', {})
             st.session_state.pop('scan_job', None)
 
             st.success(f"✅ Tarama {total_time:.0f} saniyede tamamlandı!")
@@ -732,6 +738,25 @@ def render_scanner(all_data_getter, bist_lists):
             st.warning(fetch_diag['msg'])
         else:
             st.caption(fetch_diag['msg'])
+
+    eligible_counts = st.session_state.get('eligible_counts', {})
+    if eligible_counts:
+        eligibility_lines = []
+        for w, (eligible, total) in eligible_counts.items():
+            pct = (eligible / total * 100) if total else 0
+            eligibility_lines.append(f"{w}G: {eligible}/{total} hissede yeterli veri (%{pct:.0f})")
+        low_data_windows = [w for w, (elig, tot) in eligible_counts.items()
+                             if tot and elig / tot < 0.5]
+        if low_data_windows:
+            st.warning(
+                "⚠️ " + " | ".join(eligibility_lines) +
+                f" — {', '.join(str(w) + 'G' for w in low_data_windows)} penceresinde "
+                "hisselerin çoğunda bu kadar uzun bir şablon için yeterli geçmiş veri "
+                "yok, bu yüzden neredeyse hiç gerçek karşılaştırma yapılamadı. Daha "
+                "kısa bir şablon uzunluğu deneyin veya bu pencereyi listeden çıkarın."
+            )
+        else:
+            st.caption("📊 " + " | ".join(eligibility_lines))
 
     results_by_window = st.session_state.get('scan_results', {})
     scan_windows = st.session_state.get('scan_windows', [])
