@@ -649,6 +649,13 @@ def render_scanner(all_data_getter, bist_lists):
 
         # ── Chunk boyutu: pencere sayısına göre otomatik küçülür ──────────────
         chunk_size = max(3, 20 // max(1, len(window_options)))
+        # Uzun pencereler (180G+) hisse başına çok daha pahalı — chunk'ı
+        # küçültüp ilerleme çubuğunun/durum satırının donmuş görünmesini önle.
+        max_selected_window = max(window_options)
+        if max_selected_window >= 240:
+            chunk_size = max(1, chunk_size // 4)
+        elif max_selected_window >= 150:
+            chunk_size = max(2, chunk_size // 2)
 
         st.session_state['scan_job'] = {
             'tickers': list(all_data.keys()),
@@ -706,9 +713,17 @@ def render_scanner(all_data_getter, bist_lists):
             st.warning("Tarama iptal edildi.")
             st.rerun()
 
+        live_status = st.empty()
+        chunk_total_steps = len(chunk_tickers) * len(job['windows'])
+        step_i = 0
+
         for ticker in chunk_tickers:
             df = job['all_data'][ticker]
             for w in job['windows']:
+                step_i += 1
+                live_status.caption(
+                    f"🔄 İşleniyor: {ticker} ({w}G) — bu grupta {step_i}/{chunk_total_steps}"
+                )
                 fut_w = int(w * 1.5)
                 job.setdefault('eligible_counts', {w2: [0, 0] for w2 in job['windows']})
                 job['eligible_counts'].setdefault(w, [0, 0])
