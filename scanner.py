@@ -466,6 +466,32 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
     }
 
 
+def _required_fetch_period(window_options):
+    """
+    Seçilen en uzun şablon (window) için, hem şablonun hem de tahmin
+    penceresinin (fut_window = window*1.5) sığması için gereken minimum
+    veri derinliğini hesaplar ve uygun bir yfinance period string'i döner.
+    Yetersiz veri çekilirse (örn. 360G şablon için sabit '2y'), o pencerede
+    hiçbir hissede yeterli geçmiş kalmaz ve tarama sessizce boş sonuç verir.
+    """
+    if not window_options:
+        return "2y"
+    max_window = max(window_options)
+    # Gerekli işlem günü ≈ window + window*1.5 + güvenlik payı
+    required_trading_days = max_window + int(max_window * 1.5) + 40
+    # ~0.69 işlem günü/takvim günü oranıyla takvim gününe çevir, payla
+    required_calendar_days = required_trading_days / 0.65
+    required_years = required_calendar_days / 365
+    if required_years <= 1.8:
+        return "2y"
+    elif required_years <= 4.5:
+        return "5y"
+    elif required_years <= 9:
+        return "10y"
+    else:
+        return "max"
+
+
 def render_scanner(all_data_getter, bist_lists):
     st.markdown("## 🔭 BIST Fırsat Tarayıcı")
     st.caption(
@@ -560,7 +586,8 @@ def render_scanner(all_data_getter, bist_lists):
         tickers = scope_map[scope]
 
         with st.spinner("Veriler yükleniyor..."):
-            all_data = all_data_getter(tickers, period="2y")
+            fetch_period = _required_fetch_period(window_options)
+            all_data = all_data_getter(tickers, period=fetch_period)
 
             index_closes = None
             try:
@@ -686,7 +713,7 @@ def render_scanner(all_data_getter, bist_lists):
                 job.setdefault('eligible_counts', {w2: [0, 0] for w2 in job['windows']})
                 job['eligible_counts'].setdefault(w, [0, 0])
                 job['eligible_counts'][w][1] += 1  # toplam denenen
-                if len(df) >= w + 10:
+                if len(df) >= w + fut_w + 5:
                     job['eligible_counts'][w][0] += 1  # yeterli veriye sahip
                 _t0 = time.time()
                 r = scan_single_ticker(ticker, df, job['all_data'],
