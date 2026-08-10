@@ -1482,7 +1482,7 @@ def main():
         st.session_state['library_action'] = None
         st.info(f"📚 **{t['name']}** kütüphaneden yüklendi. Tarihler otomatik ayarlandı.")
 
-  st.markdown("## 📊 BIST Pattern Matcher")
+    st.markdown("## 📊 BIST Pattern Matcher")
     st.caption(
         "Seçtiğiniz **herhangi bir tarih aralığını** şablon alır ve şekil benzerliğine "
         "ek olarak hissenin genel **karakterini** (volatilite, beta, trend eğimi, "
