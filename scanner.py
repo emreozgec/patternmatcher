@@ -578,24 +578,34 @@ def render_scanner(all_data_getter, bist_lists):
         n_requested = len(tickers)
         n_received = len(all_data)
         if n_received == 0:
-            st.error(
-                f"❌ {n_requested} hisse istendi ama HİÇBİRİNİN verisi alınamadı. "
-                "Bu bir 'sonuç bulunamadı' değil, veri çekme hatası — muhtemelen "
-                "yfinance/Yahoo Finance'a çok fazla hisseyi tek seferde sorduğumuz "
-                "için istek reddedildi veya zaman aşımına uğradı. Daha küçük bir "
-                "kapsamla (BIST 30/100) tekrar deneyin, veya birkaç dakika sonra "
-                "tekrar deneyin."
-            )
+            st.session_state['fetch_diagnostic'] = {
+                'level': 'error',
+                'msg': (
+                    f"❌ {n_requested} hisse istendi ama HİÇBİRİNİN verisi alınamadı. "
+                    "Bu bir 'sonuç bulunamadı' değil, veri çekme hatası — muhtemelen "
+                    "yfinance/Yahoo Finance'a çok fazla hisseyi tek seferde sorduğumuz "
+                    "için istek reddedildi veya zaman aşımına uğradı. Daha küçük bir "
+                    "kapsamla (BIST 30/100) tekrar deneyin, veya birkaç dakika sonra "
+                    "tekrar deneyin."
+                )
+            }
+            st.error(st.session_state['fetch_diagnostic']['msg'])
             return
         elif n_received < n_requested * 0.5:
-            st.warning(
-                f"⚠️ {n_requested} hisse istendi, sadece {n_received} tanesinin "
-                f"verisi alınabildi (%{n_received/n_requested*100:.0f}). Sonuçlar "
-                "eksik olabilir — bazı hisseler az işlem görüyor olabilir ya da "
-                "veri sağlayıcıda geçici bir sorun var."
-            )
+            st.session_state['fetch_diagnostic'] = {
+                'level': 'warning',
+                'msg': (
+                    f"⚠️ {n_requested} hisse istendi, sadece {n_received} tanesinin "
+                    f"verisi alınabildi (%{n_received/n_requested*100:.0f}). Sonuçlar "
+                    "eksik olabilir — bazı hisseler az işlem görüyor olabilir ya da "
+                    "veri sağlayıcıda geçici bir sorun var."
+                )
+            }
         else:
-            st.caption(f"✅ {n_received}/{n_requested} hisse verisi alındı.")
+            st.session_state['fetch_diagnostic'] = {
+                'level': 'ok',
+                'msg': f"✅ {n_received}/{n_requested} hisse verisi alındı."
+            }
 
         clear_window_cache()
 
@@ -713,6 +723,15 @@ def render_scanner(all_data_getter, bist_lists):
     scan_duration = st.session_state.get('scan_duration')
     if scan_duration:
         st.caption(f"✅ Son tarama {scan_duration:.0f} saniyede tamamlandı.")
+
+    fetch_diag = st.session_state.get('fetch_diagnostic')
+    if fetch_diag:
+        if fetch_diag['level'] == 'error':
+            st.error(fetch_diag['msg'])
+        elif fetch_diag['level'] == 'warning':
+            st.warning(fetch_diag['msg'])
+        else:
+            st.caption(fetch_diag['msg'])
 
     results_by_window = st.session_state.get('scan_results', {})
     scan_windows = st.session_state.get('scan_windows', [])
