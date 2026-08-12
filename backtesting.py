@@ -1076,7 +1076,7 @@ def _render_manual_backtest(fetch_batch_fn, find_patterns_fn, all_bist_lists: Di
     col1, col2, col3 = st.columns(3)
     with col1:
         scope      = st.selectbox("Hisse Evreni", ["BIST 30","BIST 100","Tüm BIST"], index=0)
-        window     = st.selectbox("Şablon Uzunluğu", [20, 40, 60, 90, 120, 180, 250, 365], index=3,
+        window     = st.selectbox("Şablon Uzunluğu", [10, 20, 30, 40, 60, 90, 120, 180, 240, 360], index=5,
                        help="Kalıp süresi uzadıkça rastgele benzerlik ihtimali azalır ve güven artar.")
         min_psi    = st.slider("Min BIST-PSI", 55, 85, 70, 1,
                         help="Grid Search doğrulaması: PSI ~70 optimal (Sharpe 6.92, %%69 kazanç)")
@@ -1376,7 +1376,9 @@ def _render_grid_search(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict):
         g_scope = st.selectbox("Hisse Evreni", ["BIST 30", "BIST 100"], index=0,
                                key="grid_scope",
                                help="Grid search çok sayıda kombinasyon test ettiği için BIST 30 önerilir")
-        g_hold_days = st.slider("Sabit Tutma Süresi (gün)", 5, 40, 20, 5, key="grid_hold")
+        g_hold_days = st.slider("Sabit Tutma Süresi (gün)", 5, 600, 20, 5, key="grid_hold",
+                                 help="Test ettiğiniz pencere uzunluğuna göre ayarlayın — kabaca "
+                                      "pencere × 1.5 (örn. 360G pencere için ~540 gün).")
     with gc2:
         g_init_cap = st.number_input("Başlangıç Sermayesi ₺", min_value=10_000,
                                      max_value=10_000_000, value=100_000,
@@ -1417,9 +1419,16 @@ def _render_grid_search(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict):
         )
     with pc3:
         window_options = st.multiselect(
-            "Şablon Uzunlukları", [20, 40, 60, 90, 120, 180],
-            default=[40, 90], key="grid_window_vals"
+            "Şablon Uzunlukları", [10, 20, 30, 40, 60, 90, 120, 180, 240, 360],
+            default=[20, 90, 180], key="grid_window_vals"
         )
+
+    st.caption(
+        "ℹ️ Bu grid search, hız için sadece **Pearson korelasyonuna** dayanıyor "
+        "(canlı Fırsat Tarayıcı %55 Pearson + %45 DTW karışımı kullanır). Sonuçlar "
+        "hangi pencere/eşik biriminin genel olarak daha iyi çalıştığına dair güçlü "
+        "bir yön verir, ama canlı skorla birebir aynı sayı olmayabilir."
+    )
 
     n_combos = len(psi_options) * len(conf_band_options) * len(window_options)
     if n_combos > 0:
@@ -1566,7 +1575,8 @@ def _render_walk_forward(fetch_batch_fn, find_patterns_fn, all_bist_lists: Dict)
     wc1, wc2, wc3 = st.columns(3)
     with wc1:
         w_scope = st.selectbox("Hisse Evreni", ["BIST 30", "BIST 100"], index=0, key="wf_scope")
-        w_window = st.selectbox("Şablon Uzunluğu", [20, 40, 60, 90, 120, 180], index=3, key="wf_window",
+        w_window = st.selectbox("Şablon Uzunluğu", [10, 20, 30, 40, 60, 90, 120, 180, 240, 360],
+                       index=5, key="wf_window",
                        help="Uzun vadeli şablonlar daha tutarlı sonuçlar verebilir.")
     with wc2:
         w_psi = st.slider("Min PSI", 55, 85, 70, 1, key="wf_psi")
