@@ -308,7 +308,8 @@ def backtest_fixed_hold(
         pct_ret     = (exit_price - entry_price) / (entry_price + 1e-9) * 100
         hold        = exit_idx - entry_idx
 
-        trade_cap   = capital * pos_size
+        trade_cap   = init_cap * pos_size   # SABİT taban — örtüşen pozisyonlarda
+        # 'capital'ı kullanmak zincirleme (bileşik) patlamaya yol açıyordu, bkz. not.
         profit      = trade_cap * pct_ret / 100
         capital    += profit
 
@@ -392,7 +393,7 @@ def backtest_sl_tp(
         pct_ret   = (exit_price - entry_price) / (entry_price + 1e-9) * 100
         hold      = exit_idx - entry_idx
 
-        trade_cap = capital * pos_size
+        trade_cap = init_cap * pos_size   # SABİT taban — bkz. backtest_fixed_hold notu
         profit    = trade_cap * pct_ret / 100
         capital  += profit
 
@@ -438,6 +439,8 @@ def _calc_metrics(name: str, trades: List[Trade], equity: List[float],
     wins = [r for r in rets if r > 0]
     losses = [r for r in rets if r <= 0]
 
+    avg_hold = float(np.mean([t.hold_days for t in trades])) if trades else 1.0
+
     total_return = (equity[-1] - init_cap) / init_cap * 100
 
     # Yıllık getiri (CAGR)
@@ -452,17 +455,25 @@ def _calc_metrics(name: str, trades: List[Trade], equity: List[float],
     else:
         annual_return = total_return
 
-    # Sharpe (günlük getirilerden)
+    # Sharpe/Sortino: her örnek bir İŞLEM getirisi (ör. 450 günlük), GÜNLÜK
+    # getiri DEĞİL — bunu sabit √252 ile yıllıklandırmak (günlük getiri
+    # varsayımıyla) uzun tutma sürelerinde sayıyı devasa şişiriyordu.
+    # Doğru çarpan: yılda kaç "bağımsız işlem dönemi" geçtiğine göre
+    # (252 işlem günü / ortalama tutma süresi).
+    periods_per_year = 252.0 / max(avg_hold, 1.0)
+    annualization = np.sqrt(periods_per_year)
+
+    # Sharpe (işlem başına getirilerden, doğru yıllıklandırma ile)
     ret_arr = np.array(rets)
     if ret_arr.std() > 1e-9:
-        sharpe = float(ret_arr.mean() / ret_arr.std() * np.sqrt(252))
+        sharpe = float(ret_arr.mean() / ret_arr.std() * annualization)
     else:
         sharpe = 0.0
 
     # Sortino (sadece negatif sapma)
     neg_rets = ret_arr[ret_arr < 0]
     if len(neg_rets) > 0 and neg_rets.std() > 1e-9:
-        sortino = float(ret_arr.mean() / neg_rets.std() * np.sqrt(252))
+        sortino = float(ret_arr.mean() / neg_rets.std() * annualization)
     else:
         sortino = sharpe
 
@@ -488,8 +499,6 @@ def _calc_metrics(name: str, trades: List[Trade], equity: List[float],
     gross_profit = sum(w for w in wins)
     gross_loss   = abs(sum(l for l in losses))
     profit_factor = gross_profit / (gross_loss + 1e-9)
-
-    avg_hold = float(np.mean([t.hold_days for t in trades]))
 
     return BacktestResult(
         strategy_name  = name,
