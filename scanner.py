@@ -515,44 +515,33 @@ def _required_fetch_period(window_options):
         return "max"
 
 
-def render_scanner(all_data_getter, bist_lists):
-    st.markdown("## 🔭 BIST Fırsat Tarayıcı")
-    st.caption(
-        "Her hissenin **son dönem fiyat grafiğinin şeklini** (DTW + Pearson korelasyonu) "
-        "diğer hisselerin geçmişiyle karşılaştırır — 'bu grafik daha önce nerede görüldü, "
-        "sonrasında ne oldu' sorusuna cevap arar. Sonuçta gösterilen tarih aralığını "
-        "grafikte açıp gözle doğrulayabilirsiniz."
-    )
-    st.caption(
-        "ℹ️ Bu, sayfa menüsündeki **Pattern Matcher**'dan farklı bir araç: Pattern "
-        "Matcher şekil benzerliğine ek olarak hissenin genel karakterini (volatilite, "
-        "beta, trend) de karışıma katar — o yüzden iki sayfa aynı hisse için farklı "
-        "sonuç verebilir, bu normaldir."
-    )
-    st.divider()
+def _render_scan_ui(all_data_getter, bist_lists, tab_id, fixed_windows,
+                     default_min_conf=50, default_max_conf=65):
+    window_options = list(fixed_windows)
+    windows_label = " + ".join(f"{w}G" for w in window_options)
+    st.caption(f"Bu sekme sabit olarak **{windows_label}** şablon uzunluğunu tarar.")
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c3, c4 = st.columns(3)
     with c1:
-        scope = st.selectbox("Kapsam", ["BIST 30", "BIST 100", "Tüm BIST"], index=1)
-    with c2:
-        window_options = st.multiselect(
-            "Şablon Uzunlukları (gün)", [10, 20, 30, 90, 120, 180, 240, 360],
-            default=[90, 120],
-            help="Kısa şablonlar (10-30G) yakın vadeli/ani kırılma sinyalleri, "
-                 "uzun şablonlar (90-360G) daha yavaş gelişen trendleri yakalar. "
-                 "Her uzunluk ayrı taranır ve ayrı sekmede gösterilir. "
-                 "fut_window otomatik olarak şablonun 1.5 katı alınır."
-        )
+        scope = st.selectbox("Kapsam", ["BIST 30", "BIST 100", "Tüm BIST"], index=1,
+                              key=f"scope_{tab_id}")
     with c3:
         min_sim = st.slider("Min Benzerlik", 55, 85, 80, 1,
-                             help="Backtesting: PSI 80+ en iyi (%%61 kazanç)")
-        min_conf = st.slider("Min Güven %", 40, 80, 55, 1,
-                              help="Backtesting: 55-65 bandı optimal (%66 kazanç, +5.2%)")
-        max_conf = st.slider("Maks Güven %", 60, 100, 68, 1,
-                              help="Anti-consensus: 65+ güven sinyalleri daha az kazanıyor")
+                             help="Backtesting (BIST 30, düzeltilmiş metrik): PSI eşiği "
+                                  "pencereye göre değişiyor, 70-80 arası ikisi de makul.",
+                             key=f"min_sim_{tab_id}")
+        min_conf = st.slider("Min Güven %", 40, 80, default_min_conf, 1,
+                              help="Backtesting: Güven Bandı ~50-65 çoğu pencerede en "
+                                   "iyi risk-ayarlı sonucu veriyor (bkz. Grid Search).",
+                              key=f"min_conf_{tab_id}")
+        max_conf = st.slider("Maks Güven %", 60, 100, default_max_conf, 1,
+                              help="Backtesting: 65 üzeri bantlar test edilen pencerelerde "
+                                   "daha zayıf çıktı.",
+                              key=f"max_conf_{tab_id}")
     with c4:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        scan_btn = st.button("🔭 Tara", type="primary", use_container_width=True)
+        scan_btn = st.button("🔭 Tara", type="primary", use_container_width=True,
+                              key=f"scan_btn_{tab_id}")
 
     c5, c6 = st.columns(2)
     with c5:
@@ -562,7 +551,8 @@ def render_scanner(all_data_getter, bist_lists):
             horizontal=True,
             help="'En Yakın Kırılmaya göre', geçmiş eşleşmelerin zirveye ortalama "
                  "kaç günde ulaştığına (Beklenen Gün) bakarak en çabuk hareket "
-                 "etmesi beklenen hisseleri en üste getirir."
+                 "etmesi beklenen hisseleri en üste getirir.",
+            key=f"sort_mode_{tab_id}"
         )
         speed_mode = st.radio(
             "Hız Modu",
@@ -570,13 +560,15 @@ def render_scanner(all_data_getter, bist_lists):
             horizontal=True,
             help="Hızlı mod, hisse başına karşılaştırılan aday sayısını ve DTW "
                  "ince-ayar taramasını azaltır — süre yaklaşık yarıya iner, "
-                 "sonuçların hassasiyetinde küçük bir düşüş olabilir."
+                 "sonuçların hassasiyetinde küçük bir düşüş olabilir.",
+            key=f"speed_mode_{tab_id}"
         )
     with c6:
         max_expected_days = st.slider(
-            "Maks Beklenen Gün (yakın kırılma filtresi)", 3, 360, 360, 1,
+            "Maks Beklenen Gün (yakın kırılma filtresi)", 3, 600, 600, 1,
             help="Sadece bu gün sayısı içinde hareket etmesi beklenen hisseleri göster. "
-                 "'Hemen çıkacak' hisseler için bunu küçük tutun (örn. 10-20 gün)."
+                 "'Hemen çıkacak' hisseler için bunu küçük tutun (örn. 10-20 gün).",
+            key=f"max_exp_days_{tab_id}"
         )
 
     if speed_mode.startswith("🚀"):
@@ -628,7 +620,7 @@ def render_scanner(all_data_getter, bist_lists):
         n_requested = len(tickers)
         n_received = len(all_data)
         if n_received == 0:
-            st.session_state['fetch_diagnostic'] = {
+            st.session_state[f'fetch_diagnostic_{tab_id}'] = {
                 'level': 'error',
                 'msg': (
                     f"❌ {n_requested} hisse istendi ama HİÇBİRİNİN verisi alınamadı. "
@@ -639,10 +631,10 @@ def render_scanner(all_data_getter, bist_lists):
                     "tekrar deneyin."
                 )
             }
-            st.error(st.session_state['fetch_diagnostic']['msg'])
+            st.error(st.session_state[f'fetch_diagnostic_{tab_id}']['msg'])
             return
         elif n_received < n_requested * 0.5:
-            st.session_state['fetch_diagnostic'] = {
+            st.session_state[f'fetch_diagnostic_{tab_id}'] = {
                 'level': 'warning',
                 'msg': (
                     f"⚠️ {n_requested} hisse istendi, sadece {n_received} tanesinin "
@@ -652,7 +644,7 @@ def render_scanner(all_data_getter, bist_lists):
                 )
             }
         else:
-            st.session_state['fetch_diagnostic'] = {
+            st.session_state[f'fetch_diagnostic_{tab_id}'] = {
                 'level': 'ok',
                 'msg': f"✅ {n_received}/{n_requested} hisse verisi alındı."
             }
@@ -680,7 +672,7 @@ def render_scanner(all_data_getter, bist_lists):
         elif max_selected_window >= 150:
             chunk_size = max(2, chunk_size // 2)
 
-        st.session_state['scan_job'] = {
+        st.session_state[f'scan_job_{tab_id}'] = {
             'tickers': list(all_data.keys()),
             'all_data': all_data,
             'index_closes': index_closes,
@@ -698,11 +690,11 @@ def render_scanner(all_data_getter, bist_lists):
             'results': {w: [] for w in window_options},
             'start_time': time.time(),
         }
-        st.session_state.pop('scan_results', None)
-        st.session_state.pop('scan_windows', None)
+        st.session_state.pop(f'scan_results_{tab_id}', None)
+        st.session_state.pop(f'scan_windows_{tab_id}', None)
         st.rerun()
 
-    job = st.session_state.get('scan_job')
+    job = st.session_state.get(f'scan_job_{tab_id}')
     if job is not None:
         total = len(job['tickers'])
         cursor = job['cursor']
@@ -731,8 +723,8 @@ def render_scanner(all_data_getter, bist_lists):
                 for tkr, w, dur in slowest:
                     st.text(f"  {tkr} ({w}G): {dur:.2f}sn")
 
-        if st.button("⏹️ Taramayı İptal Et", key="cancel_scan"):
-            st.session_state.pop('scan_job', None)
+        if st.button("⏹️ Taramayı İptal Et", key=f"cancel_scan_{tab_id}"):
+            st.session_state.pop(f'scan_job_{tab_id}', None)
             st.warning("Tarama iptal edildi.")
             st.rerun()
 
@@ -767,7 +759,7 @@ def render_scanner(all_data_getter, bist_lists):
                     job['results'][w].append(r)
 
         job['cursor'] = chunk_end
-        st.session_state['scan_job'] = job
+        st.session_state[f'scan_job_{tab_id}'] = job
 
         if chunk_end < total:
             time.sleep(0.1)
@@ -779,23 +771,23 @@ def render_scanner(all_data_getter, bist_lists):
                                for w, rs in job['results'].items()}
 
             total_time = time.time() - job['start_time']
-            st.session_state['scan_results'] = sorted_results
-            st.session_state['scan_windows'] = job['windows']
-            st.session_state['scan_scope'] = job['scope']
-            st.session_state['scan_duration'] = total_time
-            st.session_state['eligible_counts'] = job.get('eligible_counts', {})
-            st.session_state.pop('scan_job', None)
+            st.session_state[f'scan_results_{tab_id}'] = sorted_results
+            st.session_state[f'scan_windows_{tab_id}'] = job['windows']
+            st.session_state[f'scan_scope_{tab_id}'] = job['scope']
+            st.session_state[f'scan_duration_{tab_id}'] = total_time
+            st.session_state[f'eligible_counts_{tab_id}'] = job.get('eligible_counts', {})
+            st.session_state.pop(f'scan_job_{tab_id}', None)
 
             st.success(f"✅ Tarama {total_time:.0f} saniyede tamamlandı!")
             st.rerun()
 
         return
 
-    scan_duration = st.session_state.get('scan_duration')
+    scan_duration = st.session_state.get(f'scan_duration_{tab_id}')
     if scan_duration:
         st.caption(f"✅ Son tarama {scan_duration:.0f} saniyede tamamlandı.")
 
-    fetch_diag = st.session_state.get('fetch_diagnostic')
+    fetch_diag = st.session_state.get(f'fetch_diagnostic_{tab_id}')
     if fetch_diag:
         if fetch_diag['level'] == 'error':
             st.error(fetch_diag['msg'])
@@ -804,7 +796,7 @@ def render_scanner(all_data_getter, bist_lists):
         else:
             st.caption(fetch_diag['msg'])
 
-    eligible_counts = st.session_state.get('eligible_counts', {})
+    eligible_counts = st.session_state.get(f'eligible_counts_{tab_id}', {})
     if eligible_counts:
         eligibility_lines = []
         for w, (eligible, total) in eligible_counts.items():
@@ -823,10 +815,10 @@ def render_scanner(all_data_getter, bist_lists):
         else:
             st.caption("📊 " + " | ".join(eligibility_lines))
 
-    results_by_window = st.session_state.get('scan_results', {})
-    scan_windows = st.session_state.get('scan_windows', [])
+    results_by_window = st.session_state.get(f'scan_results_{tab_id}', {})
+    scan_windows = st.session_state.get(f'scan_windows_{tab_id}', [])
 
-    if 'scan_results' not in st.session_state:
+    if f'scan_results_{tab_id}' not in st.session_state:
         st.info("Ayarları yapıp 'Tara' butonuna basın.")
         return
 
@@ -842,7 +834,7 @@ def render_scanner(all_data_getter, bist_lists):
         filtered_results_by_window[w] = rs
     results_by_window = filtered_results_by_window
 
-    scope_label = st.session_state.get('scan_scope', '')
+    scope_label = st.session_state.get(f'scan_scope_{tab_id}', '')
     total_found = sum(len(v) for v in results_by_window.values())
 
     if total_found == 0:
@@ -1162,3 +1154,46 @@ def render_scanner(all_data_getter, bist_lists):
                                 expected_pct=r.get('weighted_pct'),
                                 key_suffix=f"scan_{r['window']}_{row_i}"
                             )
+
+
+def render_scanner(all_data_getter, bist_lists):
+    st.markdown("## 🔭 BIST Fırsat Tarayıcı")
+    st.caption(
+        "Her hissenin **son dönem fiyat grafiğinin şeklini** (DTW + Pearson korelasyonu) "
+        "diğer hisselerin geçmişiyle karşılaştırır — 'bu grafik daha önce nerede görüldü, "
+        "sonrasında ne oldu' sorusuna cevap arar. Sonuçta gösterilen tarih aralığını "
+        "grafikte açıp gözle doğrulayabilirsiniz."
+    )
+    st.caption(
+        "ℹ️ Bu, sayfa menüsündeki **Pattern Matcher**'dan farklı bir araç: Pattern "
+        "Matcher şekil benzerliğine ek olarak hissenin genel karakterini (volatilite, "
+        "beta, trend) de karışıma katar — o yüzden iki sayfa aynı hisse için farklı "
+        "sonuç verebilir, bu normaldir."
+    )
+    st.caption(
+        "📊 Şablon uzunlukları ve varsayılan Güven Bandı, BIST 30 üzerinde yapılan "
+        "backtesting sonuçlarına göre belirlendi (bkz. Backtesting → Grid Search). "
+        "10G/20G gibi çok kısa şablonlar testlerde tutarlı biçimde zayıf çıktığı için "
+        "bu sayfada sunulmuyor."
+    )
+    st.divider()
+
+    tab_short, tab_long = st.tabs(["⚡ Kısa Vade (30G)", "🐢 Uzun Vade (120G + 180G)"])
+
+    with tab_short:
+        st.info(
+            "**30G — backtesting'te en iyi risk-ayarlı performans** (Sharpe 1.64, "
+            "%67 kazanma oranı, düşük düşüş -3.1%). ~25 günde sonuçlanır, kısa vadeli "
+            "kullanım için uygun."
+        )
+        _render_scan_ui(all_data_getter, bist_lists, tab_id="short",
+                         fixed_windows=[30], default_min_conf=50, default_max_conf=65)
+
+    with tab_long:
+        st.info(
+            "**120G + 180G — backtesting'te en yüksek toplam getiri ve kazanma oranı** "
+            "(Sharpe ~1.4-1.5, %85-87 kazanma oranı, +200%+ toplam getiri) — ama "
+            "sonuçlanması 150+ gün sürebilir, sabır gerektirir."
+        )
+        _render_scan_ui(all_data_getter, bist_lists, tab_id="long",
+                         fixed_windows=[120, 180], default_min_conf=50, default_max_conf=65)
