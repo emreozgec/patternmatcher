@@ -445,6 +445,13 @@ def scan_single_ticker(ticker, df, all_data, window, fut_window, min_sim=60,
     if confidence < 45:
         return None
 
+    # ── Veri sağlık kontrolü ─────────────────────────────────────────────────
+    # Bazı hisselerde (örn. bölünme/split öncesi düzeltilmemiş veri) fiyat
+    # veya beklenen hareket gerçekçi olmayan değerlere çıkabiliyor. Bunları
+    # sonuç listesine hiç sokmuyoruz — yatırım kararına dayanak olamaz.
+    if current_price > 50000 or current_price <= 0 or weighted_max > 300:
+        return None
+
     target = current_price * (1 + weighted_max / 100)
 
     formations = []
@@ -968,8 +975,48 @@ def _render_scan_ui(all_data_getter, bist_lists, tab_id, fixed_windows,
             m3.metric("Ort. Benzerlik", f"{np.mean([r['avg_sim'] for r in results]):.0f}")
             m4.metric("Ort. Hedef Hareket", f"+{np.mean([r['weighted_pct'] for r in results]):.1f}%")
 
+            top_n_choice = st.selectbox(
+                "En iyi kaç sonuç gösterilsin", [10, 15, 20, 30, "Tümü"], index=1,
+                key=f"topn_{w}_{tab_id}",
+                help="Sonuçlar zaten Güven + Benzerlik + Beklenen Getiri'ye göre "
+                     "en iyiden en zayıfa sıralı — burada sadece kaçının gösterileceğini seçiyorsun."
+            )
+            if top_n_choice == "Tümü":
+                display_results = results
+            else:
+                display_results = results[:top_n_choice]
+
+            if st.button(f"💾 Gösterilen {len(display_results)} Sonucu Takibe Al",
+                         key=f"track_{w}_{tab_id}"):
+                try:
+                    import db_utils
+                    from datetime import datetime as _dt
+                    db_utils.init_db()
+                    saved = 0
+                    today_str = _dt.now().strftime('%Y-%m-%d')
+                    for r in display_results:
+                        db_utils.save_signal(
+                            ticker=r['ticker'], window=r['window'],
+                            signal_date=today_str, entry_price=r['current_price'],
+                            target_price=r['target'], weighted_pct=r['weighted_pct'],
+                            confidence=r['confidence'], avg_sim=r['avg_sim'],
+                            source=f"Fırsat Tarayıcı (manuel, {tab_id})",
+                            expected_days=r['expected_days'],
+                            stop_price=round(r['current_price'] * (1 - r['stop_pct'] / 100), 2),
+                            ml_prob=r.get('ml_prob'),
+                        )
+                        saved += 1
+                    st.success(
+                        f"✅ {saved} sinyal veritabanına kaydedildi. Sonuçlarını "
+                        "'📈 Sinyal Performansı' sayfasından takip edebilirsin — "
+                        "günlük otomatik tarama çalıştıkça durumları (WIN/LOSS/açık) "
+                        "güncellenecek."
+                    )
+                except Exception as e:
+                    st.error(f"Kaydedilemedi: {e}")
+
             rows = []
-            for r in results:
+            for r in display_results:
                 fmt_str = ' / '.join(r['formations'][:2]) if r['formations'] else '—'
                 top_m = r['top_matches'][0] if r.get('top_matches') else None
                 if top_m:
@@ -998,8 +1045,8 @@ def _render_scan_ui(all_data_getter, bist_lists, tab_id, fixed_windows,
             st.markdown("---")
             st.markdown(f"#### 🃏 Detay Kartlar — {fut_label} tahmin penceresi")
 
-            for row_i in range(0, min(len(results), 15), 3):
-                row = results[row_i:row_i + 3]
+            for row_i in range(0, len(display_results), 3):
+                row = display_results[row_i:row_i + 3]
                 cols = st.columns(3)
                 for col, r in zip(cols, row):
                     with col:
@@ -1154,6 +1201,20 @@ def _render_scan_ui(all_data_getter, bist_lists, tab_id, fixed_windows,
                                 expected_pct=r.get('weighted_pct'),
                                 key_suffix=f"scan_{r['window']}_{row_i}"
                             )
+
+            remaining = results[len(display_results):]
+            if remaining:
+                with st.expander(f"➕ Kalan {len(remaining)} sonucu göster (özet tablo)"):
+                    rem_rows = []
+                    for r in remaining:
+                        rem_rows.append({
+                            '🏢 Hisse': r['ticker'],
+                            '💰 Fiyat': f"{r['current_price']:.2f} ₺",
+                            '📈 Beklenen': f"+{r['weighted_pct']:.1f}%",
+                            '🔒 Güven': f"%{r['confidence']:.0f}",
+                            '⚡ Beklenen Gün': f"{r['expected_days']} gün",
+                        })
+                    st.dataframe(pd.DataFrame(rem_rows), use_container_width=True, hide_index=True)
 
 
 def render_scanner(all_data_getter, bist_lists):
