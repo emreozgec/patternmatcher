@@ -1673,6 +1673,13 @@ def main():
     date_list = [d.date() for d in df.index]
     mid = len(date_list) // 2
 
+    # ── GEÇİCİ TEŞHİS — 2026 tarih sorununu netleştirmek için ────────────────
+    st.info(
+        f"🔍 Teşhis: Sunucu bugünü **{datetime.today().date()}** olarak görüyor. "
+        f"{sym} için çekilen veri **{date_list[0]}** — **{date_list[-1]}** aralığında "
+        f"({len(date_list)} işlem günü)."
+    )
+
     # Kütüphaneden yüklenen tarihler varsa kullan
     _ls = st.session_state.pop('_load_start', None)
     _le = st.session_state.pop('_load_end', None)
