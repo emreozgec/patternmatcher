@@ -54,7 +54,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 
 # yfinance indirmelerinin engellenmesini önlemek için User-Agent tanımlı session oluştur
@@ -151,12 +151,32 @@ ALL_BIST = list(set(BIST100 + [
 # BÖLÜM 1: VERİ ÇEKME
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _period_to_start_date(period: str) -> str:
+    """
+    yfinance'a 'period' VE 'end' parametrelerini birlikte vermek belgesiz/
+    kararsız davranışa yol açıyor (bazı durumlarda veri beklenenden erken
+    kesiliyor — örn. Pattern Matcher'daki tarih seçicide son yılın hiç
+    görünmemesi). Bunun yerine period'u kesin bir başlangıç tarihine
+    çevirip start/end kullanıyoruz.
+    """
+    today = datetime.today()
+    mapping = {
+        "6mo": 183, "1y": 365, "2y": 730,
+        "5y": 1826, "10y": 3653,
+    }
+    days = mapping.get(period)
+    if days is None:
+        return "2015-01-01"  # 'max' ve tanımadığımız değerler için güvenli geniş tarih
+    return (today - timedelta(days=days)).strftime('%Y-%m-%d')
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_ticker(symbol, period="1y"):
     try:
         ticker = symbol if symbol.endswith(".IS") else symbol + ".IS"
-        today = datetime.today().strftime('%Y-%m-%d')
-        df = yf.download(ticker, period=period, end=today,
+        start_date = _period_to_start_date(period)
+        end_date = (datetime.today() + timedelta(days=1)).strftime('%Y-%m-%d')
+        df = yf.download(ticker, start=start_date, end=end_date,
                          auto_adjust=True, progress=False, threads=False, session=session)
         if df.empty or len(df) < 10:
             return None
@@ -173,8 +193,9 @@ def fetch_batch(tickers, period="2y"):
     results = {}
     symbols = [t + ".IS" for t in tickers]
     try:
-        today = datetime.today().strftime('%Y-%m-%d')
-        raw = yf.download(symbols, period=period, end=today,
+        start_date = _period_to_start_date(period)
+        end_date = (datetime.today() + timedelta(days=1)).strftime('%Y-%m-%d')
+        raw = yf.download(symbols, start=start_date, end=end_date,
                           auto_adjust=True, group_by='ticker', progress=False, session=session)
         for t in tickers:
             try:

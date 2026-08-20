@@ -164,12 +164,28 @@ ALL_BIST = list(set(BIST100 + [
     "YGYO","YIGIT","YKSLN","ZEDUR","ZRGYO"]))
 
 
+def _period_to_start_date(period: str) -> str:
+    """
+    yfinance'a 'period' VE 'end' parametrelerini birlikte vermek belgesiz/
+    kararsız davranışa yol açıyor (veri beklenenden erken kesilebiliyor).
+    Bunun yerine period'u kesin bir başlangıç tarihine çevirip start/end
+    kullanıyoruz. (app.py'deki aynı fonksiyonla birebir tutarlı.)
+    """
+    today = datetime.today()
+    mapping = {"6mo": 183, "1y": 365, "2y": 730, "5y": 1826, "10y": 3653}
+    days = mapping.get(period)
+    if days is None:
+        return "2015-01-01"
+    return (today - timedelta(days=days)).strftime('%Y-%m-%d')
+
+
 def fetch_ticker(symbol, period="2y"):
     """app.py'deki fetch_ticker ile aynı mantık."""
     try:
         ticker = symbol if symbol.endswith(".IS") else symbol + ".IS"
-        today = datetime.today().strftime('%Y-%m-%d')
-        df = yf.download(ticker, period=period, end=today,
+        start_date = _period_to_start_date(period)
+        end_date = (datetime.today() + timedelta(days=1)).strftime('%Y-%m-%d')
+        df = yf.download(ticker, start=start_date, end=end_date,
                          auto_adjust=True, progress=False, threads=False, session=session)
         if df.empty or len(df) < 10:
             return None
@@ -187,8 +203,9 @@ def fetch_batch(tickers, period="2y"):
     results = {}
     symbols = [t + ".IS" for t in tickers]
     try:
-        today = datetime.today().strftime('%Y-%m-%d')
-        raw = yf.download(symbols, period=period, end=today,
+        start_date = _period_to_start_date(period)
+        end_date = (datetime.today() + timedelta(days=1)).strftime('%Y-%m-%d')
+        raw = yf.download(symbols, start=start_date, end=end_date,
                           auto_adjust=True, group_by='ticker', progress=False, session=session)
         for t in tickers:
             try:
@@ -208,8 +225,9 @@ def fetch_batch(tickers, period="2y"):
 def fetch_index_closes(period="2y"):
     """BIST100 endeks verisini çek — genel piyasa kontrolü için."""
     try:
-        today = datetime.today().strftime('%Y-%m-%d')
-        raw = yf.download("XU100.IS", period=period, end=today,
+        start_date = _period_to_start_date(period)
+        end_date = (datetime.today() + timedelta(days=1)).strftime('%Y-%m-%d')
+        raw = yf.download("XU100.IS", start=start_date, end=end_date,
                           auto_adjust=True, progress=False, threads=False, session=session)
         if raw is not None and not raw.empty:
             if isinstance(raw.columns, pd.MultiIndex):
