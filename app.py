@@ -1556,10 +1556,9 @@ def main():
         st.info("Bir hisse seçin ve 'Yükle' butonuna basın.")
         return
 
-    # ── YENİ: Fırsat Tarayıcı Yöntemiyle Kontrol ─────────────────────────────
-    # Aynı DTW+Pearson motorunu, aynı backtest-kalibreli eşiklerle (PSI 80+,
-    # Güven 55-68), sadece BU hisse için çalıştırır — sonuç Fırsat Tarayıcı
-    # sayfasındakiyle BİREBİR tutarlıdır (aynı fonksiyon çağrılıyor).
+    # ── Fırsat Tarayıcı Yöntemiyle Kontrol ───────────────────────────────────
+    # Aynı DTW+Pearson motorunu, aynı PSI eşiğiyle, sadece BU hisse için
+    # çalıştırır — sonuç Fırsat Tarayıcı sayfasındakiyle tutarlıdır.
     with st.expander(f"🔭 {sym} için Fırsat Tarayıcı Yöntemiyle Kontrol Et"):
         st.caption(
             "Bu, Pattern Matcher'ın kendi bileşik skoru değil — Fırsat Tarayıcı "
@@ -1581,18 +1580,28 @@ def main():
             if not ft_windows:
                 st.warning("En az bir şablon uzunluğu seçmelisiniz.")
             else:
-                from scanner import scan_single_ticker, build_window_bank, clear_window_cache
+                from scanner import (scan_single_ticker, build_window_bank,
+                                      clear_window_cache, _required_fetch_period)
 
                 ft_scope_map = {"BIST 30": BIST30, "BIST 100": BIST100, "Tüm BIST": ALL_BIST}
                 candidate_tickers = ft_scope_map[ft_scope]
+                # Seçilen pencerelere yetecek kadar veri derinliği — sabit "2y"
+                # kısa pencerelerde yeterli ama 180G+ için yetersiz kalıp sessizce
+                # sıfır sonuca yol açabiliyordu.
+                ft_period = _required_fetch_period(ft_windows)
 
-                with st.spinner("Karşılaştırma verisi indiriliyor..."):
-                    ft_all_data = fetch_batch(candidate_tickers, period="2y")
-                    ft_all_data[sym] = df  # kendi hissemizin de geçmişi lazım (kendi-tarihi kontrolü için)
+                with st.spinner(f"Karşılaştırma verisi indiriliyor (period={ft_period})..."):
+                    ft_all_data = fetch_batch(candidate_tickers, period=ft_period)
+                    # Kendi hissemizin verisini de AYNI derinlikte, taze çekiyoruz —
+                    # Adım 1'deki 'Dönem' seçimine (6mo/1y/2y) bağımlı kalmasın.
+                    ft_sym_df = fetch_ticker(sym, period=ft_period)
+                    if ft_sym_df is None:
+                        ft_sym_df = df  # yedek: taze çekim başarısız olursa elimizdekini kullan
+                    ft_all_data[sym] = ft_sym_df
 
                     ft_index_closes = None
                     try:
-                        xu100_raw = yf.download("XU100.IS", period="2y", auto_adjust=True,
+                        xu100_raw = yf.download("XU100.IS", period=ft_period, auto_adjust=True,
                                                  progress=False, threads=False, session=session)
                         if xu100_raw is not None and not xu100_raw.empty:
                             if isinstance(xu100_raw.columns, pd.MultiIndex):
@@ -1601,13 +1610,15 @@ def main():
                     except Exception:
                         ft_index_closes = None
 
+                st.caption(f"📊 {len(ft_all_data)}/{len(candidate_tickers)} hisse verisi alındı.")
+
                 clear_window_cache()
                 ft_results = []
                 prog = st.progress(0, text="Taranıyor...")
                 for i, w in enumerate(ft_windows):
                     prog.progress((i + 1) / len(ft_windows), text=f"{w}G taranıyor...")
                     bank = build_window_bank(ft_all_data, window=w, fut_window=int(w * 1.5))
-                    r = scan_single_ticker(sym, df, ft_all_data, window=w, fut_window=int(w * 1.5),
+                    r = scan_single_ticker(sym, ft_sym_df, ft_all_data, window=w, fut_window=int(w * 1.5),
                                             min_sim=80, index_closes=ft_index_closes, bank=bank)
                     if r:
                         ft_results.append(r)
@@ -1617,7 +1628,9 @@ def main():
                 if not ft_results:
                     st.warning(
                         f"{sym} için hiçbir pencerede Fırsat Tarayıcı kriterlerini "
-                        "(PSI 80+, Güven 55-68) karşılayan bir sinyal bulunamadı."
+                        "(PSI 80+, Güven 45+) karşılayan bir sinyal bulunamadı. "
+                        "Bu, hissenin şu an güçlü bir tarihsel eşleşmesi olmadığı "
+                        "anlamına gelir — veri veya kod hatası değildir."
                     )
                 else:
                     for r in ft_results:
