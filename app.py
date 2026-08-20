@@ -1673,13 +1673,6 @@ def main():
     date_list = [d.date() for d in df.index]
     mid = len(date_list) // 2
 
-    # ── GEÇİCİ TEŞHİS — 2026 tarih sorununu netleştirmek için ────────────────
-    st.info(
-        f"🔍 Teşhis: Sunucu bugünü **{datetime.today().date()}** olarak görüyor. "
-        f"{sym} için çekilen veri **{date_list[0]}** — **{date_list[-1]}** aralığında "
-        f"({len(date_list)} işlem günü)."
-    )
-
     # Kütüphaneden yüklenen tarihler varsa kullan
     _ls = st.session_state.pop('_load_start', None)
     _le = st.session_state.pop('_load_end', None)
@@ -1693,12 +1686,17 @@ def main():
         _default_end   = date_list[min(len(date_list)-1,mid+15)]
 
     c_s, c_e = st.columns(2)
+    # Anahtara sembol + son tarihi ekliyoruz: Streamlit, aynı 'key' ile tekrar
+    # çizilen date_input widget'larının min/max sınırlarını bazen güncellemiyor
+    # (eski, dar sınırlarda "takılı" kalabiliyor) — anahtarı değiştirmek widget'ı
+    # sıfırdan oluşturmaya zorlar, güncel tarih aralığını garanti eder.
+    _widget_key_suffix = f"{sym}_{date_list[-1].isoformat()}"
     sel_start = c_s.date_input("📍 Başlangıç", value=_default_start,
                                min_value=date_list[0], max_value=date_list[-2],
-                               key="sel_start")
+                               key=f"sel_start_{_widget_key_suffix}")
     sel_end = c_e.date_input("🏁 Bitiş", value=_default_end,
                              min_value=date_list[1], max_value=date_list[-1],
-                             key="sel_end")
+                             key=f"sel_end_{_widget_key_suffix}")
 
     if sel_start >= sel_end:
         st.warning("Başlangıç bitiş tarihinden önce olmalı.")
