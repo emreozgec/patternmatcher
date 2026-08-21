@@ -37,21 +37,26 @@ def scan_template_today(template: Dict,
                         index_closes: np.ndarray = None) -> Dict:
     """
     Kayıtlı bir şablona BUGÜN benzeyen hisseleri bul.
-    
-    Mantık:
-    - Şablonun fiyat/hacim verisini al
+
+    Mantık (Fırsat Tarayıcı ile TUTARLI olması için scanner.py'deki AYNI
+    benzerlik fonksiyonu — %55 Pearson + %45 DTW, uzun pencerelerde aynı
+    seyreltme — kullanılır; eskiden burada ayrı bir motor olan BIST-PSI
+    kullanılıyordu, bu da Fırsat Tarayıcı ile çelişen sonuçlara yol açıyordu):
+    - Şablonun fiyat verisini al
     - Her hissenin SON [n_days] günlük hareketini al
-    - BIST-PSI ile karşılaştır
+    - scanner.py'nin similarity_score'u ile karşılaştır
     - Benzerlik yüksekse → o hisse şu an bu şablonu yapıyor
-    - Şablonun kendisinin endeksle korelasyonu kontrol edilir (genel piyasa uyarısı)
-    
+
     Returns: {'results': [...], 'index_corr': float|None, 'warning': str|None}
     """
-    from bist_psi import BISTPSI, detect_regime
+    from bist_psi import detect_regime
+    from scanner import similarity_score, zscore, downsample_factor
 
     tpl_prices  = np.array(template['prices'],  dtype=float)
     tpl_volumes = np.array(template['volumes'], dtype=float)
     n = len(tpl_prices)
+    ds = downsample_factor(n)
+    tpl_z = zscore(tpl_prices[::ds] if ds > 1 else tpl_prices)
 
     # Şablonun endeksle korelasyonu — bu şablon zaten piyasa geneli mi?
     index_corr = None
@@ -82,7 +87,6 @@ def scan_template_today(template: Dict,
                     f"yansıtıyor olabilir, hisseye özgü olmayabilir."
                 )
 
-    psi_engine = BISTPSI()
     results = []
 
     for ticker, df in all_data.items():
@@ -97,10 +101,8 @@ def scan_template_today(template: Dict,
         recent_volumes = volumes[-n:]
 
         try:
-            score, psi_result = psi_engine.compute(
-                tpl_prices, tpl_volumes,
-                recent_prices, recent_volumes
-            )
+            score = similarity_score(tpl_z, recent_prices, ds=ds)
+            regime_label = detect_regime(recent_prices, recent_volumes).describe()
         except Exception:
             continue
 
@@ -124,9 +126,7 @@ def scan_template_today(template: Dict,
             'recent_change': round(recent_change, 2),
             'expected_pct':  round(exp_pct, 2),
             'target':        round(float(closes[-1]) * (1 + exp_pct/100), 2) if exp_pct > 0 else None,
-            'regime':        psi_result.regime.describe(),
-            'breakdown':     psi_result.dim_scores,
-            'mahalanobis':   psi_result.mahalanobis_sim,
+            'regime':        regime_label,
         })
 
     results.sort(key=lambda x: x['similarity'], reverse=True)
@@ -374,7 +374,7 @@ def render_library(fetch_ticker_fn, find_patterns_fn,
 
     if len(compare_ids) >= 2:
         st.plotly_chart(fig_comparison(library, compare_ids),
-                        use_container_width=True)
+                        use_container_width=True, key="tpl_comparison_chart")
 
         # Benzerlik matrisi
         selected = [t for t in library if t['id'] in compare_ids]
@@ -442,7 +442,8 @@ def render_library(fetch_ticker_fn, find_patterns_fn,
                 st.plotly_chart(
                     fig_template_preview(prices_arr, t['symbol'],
                                          t['start_date'], t['end_date']),
-                    use_container_width=True
+                    use_container_width=True,
+                    key=f"tpl_preview_{t['id']}"
                 )
 
             with col_info:
@@ -469,7 +470,8 @@ def render_library(fetch_ticker_fn, find_patterns_fn,
                 st.markdown(f"**📊 Tarama Geçmişi:** {len(t['scan_history'])} tarama")
                 hist_fig = fig_score_history(t)
                 if hist_fig:
-                    st.plotly_chart(hist_fig, use_container_width=True)
+                    st.plotly_chart(hist_fig, use_container_width=True,
+                                     key=f"tpl_hist_{t['id']}")
 
                 # Son tarama özeti
                 last = t['scan_history'][-1]
@@ -666,8 +668,7 @@ def render_library(fetch_ticker_fn, find_patterns_fn,
                                     </div>
                                     <div style='background:#F9FAFB;border-radius:6px;
                                                 padding:5px 8px;font-size:10px;color:#555'>
-                                        {r['regime']}<br>
-                                        Mahalanobis: {r['mahalanobis']:.0f}
+                                        {r['regime']}
                                     </div>
                                 </div>
                                 """, unsafe_allow_html=True)
