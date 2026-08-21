@@ -773,7 +773,13 @@ def _render_scan_ui(all_data_getter, bist_lists, tab_id, fixed_windows,
             st.rerun()
         else:
             clear_window_cache()
-            key_fn = lambda x: x['confidence'] * 0.5 + x['avg_sim'] * 0.3 + x['weighted_pct'] * 0.2
+            # Güvenilirlik + benzerlik + beklenen getiri + HIZ (ne kadar erken
+            # gerçekleşmesi bekleniyor) birlikte tartılıyor — sadece yüksek
+            # güven değil, çabuk sonuçlanan sinyaller de öne çıksın diye.
+            def key_fn(x):
+                speed_score = max(0.0, 100.0 - (x['expected_days'] / 3.0))
+                return (x['confidence'] * 0.35 + x['avg_sim'] * 0.20
+                        + min(x['weighted_pct'], 100) * 0.15 + speed_score * 0.30)
             sorted_results = {w: sorted(rs, key=key_fn, reverse=True)
                                for w, rs in job['results'].items()}
 
@@ -830,14 +836,18 @@ def _render_scan_ui(all_data_getter, bist_lists, tab_id, fixed_windows,
         return
 
     # ── Görüntüleme anında filtre + sıralama uygula (yeniden tarama gerekmez) ──
+    def _default_key_fn(x):
+        speed_score = max(0.0, 100.0 - (x['expected_days'] / 3.0))
+        return (x['confidence'] * 0.35 + x['avg_sim'] * 0.20
+                + min(x['weighted_pct'], 100) * 0.15 + speed_score * 0.30)
+
     filtered_results_by_window = {}
     for w in scan_windows:
         rs = [r for r in results_by_window.get(w, []) if r['expected_days'] <= max_expected_days]
         if sort_mode.startswith("⚡"):
             rs = sorted(rs, key=lambda x: x['expected_days'])
         else:
-            rs = sorted(rs, key=lambda x: x['confidence'] * 0.5 + x['avg_sim'] * 0.3 + x['weighted_pct'] * 0.2,
-                        reverse=True)
+            rs = sorted(rs, key=_default_key_fn, reverse=True)
         filtered_results_by_window[w] = rs
     results_by_window = filtered_results_by_window
 
@@ -976,10 +986,11 @@ def _render_scan_ui(all_data_getter, bist_lists, tab_id, fixed_windows,
             m4.metric("Ort. Hedef Hareket", f"+{np.mean([r['weighted_pct'] for r in results]):.1f}%")
 
             top_n_choice = st.selectbox(
-                "En iyi kaç sonuç gösterilsin", [10, 15, 20, 30, "Tümü"], index=1,
+                "En iyi kaç sonuç gösterilsin", [10, 15, 20, 30, "Tümü"], index=0,
                 key=f"topn_{w}_{tab_id}",
-                help="Sonuçlar zaten Güven + Benzerlik + Beklenen Getiri'ye göre "
-                     "en iyiden en zayıfa sıralı — burada sadece kaçının gösterileceğini seçiyorsun."
+                help="Sonuçlar Güven + Benzerlik + Beklenen Getiri + Hız (ne kadar "
+                     "erken sonuçlanması bekleniyor) birlikte tartılarak en iyiden "
+                     "en zayıfa sıralanıyor — burada sadece kaçının gösterileceğini seçiyorsun."
             )
             if top_n_choice == "Tümü":
                 display_results = results
