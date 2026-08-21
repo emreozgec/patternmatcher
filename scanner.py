@@ -933,15 +933,14 @@ def _render_scan_ui(all_data_getter, bist_lists, tab_id, fixed_windows,
                 window_blocks = ""
                 for w in scan_windows:
                     rw = d['per_window'][w]
-                    window_blocks += f"""
-                    <div style='flex:1;background:#F9FAFB;border-radius:6px;padding:8px 10px'>
-                    <div style='font-size:10px;color:#888'>{w}G ŞABLON</div>
-                    <div style='font-size:13px;color:#1A1A2E'>
-                    Güven: %{rw['confidence']:.0f} |
-                    Beklenen: {rw['weighted_pct']:+.1f}%
-                    </div>
-                    </div>
-                    """
+                    window_blocks += (
+                        "<div style='flex:1;background:#F9FAFB;border-radius:6px;padding:8px 10px'>"
+                        f"<div style='font-size:10px;color:#888'>{w}G ŞABLON</div>"
+                        "<div style='font-size:13px;color:#1A1A2E'>"
+                        f"Güven: %{rw['confidence']:.0f} | "
+                        f"Beklenen: {rw['weighted_pct']:+.1f}%"
+                        "</div></div>"
+                    )
                 any_row = next(iter(d['per_window'].values()))
                 st.markdown(f"""
                 <div style='background:#FFFFFF;border:1.5px solid #0E9F6E;
